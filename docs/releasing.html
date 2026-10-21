@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monad — Signing, releases and auto-updates</title>
+<style>
+  :root { color-scheme: light dark; --muted: #6b7280; --line: #e5e7eb; --accent: #4f46e5; --box: #f5f5f7; }
+  @media (prefers-color-scheme: dark) { :root { --muted: #9ca3af; --line: #2d2f36; --box: #1b1c21; } }
+  body { font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 52rem; margin: 3rem auto; padding: 0 1.25rem; }
+  h1 { font-size: 1.8rem; margin-bottom: .25rem; } h2 { margin-top: 2.5rem; border-top: 1px solid var(--line); padding-top: 1.5rem; }
+  .lede { color: var(--muted); margin-top: 0; }
+  code, pre { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { background: var(--box); padding: .9rem 1rem; border-radius: 8px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; } th, td { text-align: left; vertical-align: top; padding: .5rem .6rem; border-bottom: 1px solid var(--line); }
+  .note { background: var(--box); border-left: 3px solid var(--accent); padding: .75rem 1rem; border-radius: 4px; }
+  ol li, ul li { margin: .3rem 0; }
+</style>
+</head>
+<body>
+<h1>Signing, releases and auto-updates</h1>
+<p class="lede">For maintainers publishing official builds, and for anyone distributing their own fork.</p>
+
+<h2>1. How updates work</h2>
+<p>Monad uses Electrobun's built-in differential updater. Installed apps check <code>&lt;baseUrl&gt;/&lt;channel&gt;-macos-arm64-update.json</code> 15 seconds after launch and every 4 hours. When the manifest's content hash differs from the running build, the sidebar shows "Update available" and macOS posts a notification. Installing is always a click (<b>Settings → Download &amp; install</b>): a few-KB bsdiff patch chain is applied when available, otherwise the full bundle is downloaded, then the app relaunches.</p>
+<ul>
+  <li><b>Channels</b> — <code>canary</code> and <code>stable</code> have independent manifests; a build stays on the channel it was built for. Dev builds never update.</li>
+  <li><b>Data survives</b> — only the <code>.app</code> is replaced. Workspaces are folders, credentials are in the Keychain, app state is in <code>~/Library/Application Support/Monad/</code>.</li>
+  <li><b>Source builds</b> without <code>MONAD_UPDATE_BASE_URL</code> show "Updates not configured" and never poll.</li>
+</ul>
+
+<h2>2. Distributing your own fork</h2>
+<p>Official builds only update from the official feed. If you ship your own build, give it its own identity so it can't collide with — or be updated by — the official app:</p>
+<ol>
+  <li>In <code>app/electrobun.config.ts</code>, change <code>app.identifier</code> (e.g. <code>com.yourcompany.monad</code>) and, if you like, <code>app.name</code>.</li>
+  <li>Use your own update bucket (§4), your own signing identity (§3) and your own Google client (<a href="google-oauth.html">google-oauth.html</a>).</li>
+</ol>
+
+<h2>3. Code signing and notarization</h2>
+<p>Unsigned builds work but need a one-time <b>right-click → Open</b> on every Mac that didn't build them. To sign, you need an Apple Developer account with a <b>Developer ID Application</b> certificate in your login keychain. Then:</p>
+<pre>cd app
+cp .env.example .env     # .env is gitignored — never commit it
+# ELECTROBUN_DEVELOPER_ID="Developer ID Application: Your Company Ltd (TEAMID1234)"
+# ELECTROBUN_APPLEID=you@example.com
+# ELECTROBUN_APPLEIDPASS=&lt;app-specific password from appleid.apple.com&gt;
+# ELECTROBUN_TEAMID=TEAMID1234</pre>
+<p>Codesigning and notarization switch on automatically when these are set. Notarization adds roughly five minutes per build while Apple scans it.</p>
+
+<h2>4. Update hosting (Cloudflare R2, ~10 minutes)</h2>
+<p>Any static HTTPS host works. R2 is the default because egress is free and the free tier covers a project this size.</p>
+<ol>
+  <li>Create a Cloudflare account, activate <b>R2 Object Storage</b> in the dashboard, then run <code>bunx wrangler login</code>.</li>
+  <li>Create a public bucket:
+<pre>bunx wrangler r2 bucket create monad-updates
+bunx wrangler r2 bucket dev-url enable monad-updates   # → https://pub-&lt;id&gt;.r2.dev</pre>
+    A custom domain (bucket → Settings → Custom Domains) can replace the <code>r2.dev</code> URL later — change the env var and rebuild.</li>
+  <li>In <code>app/.env</code>:
+<pre>MONAD_UPDATE_BASE_URL=https://pub-&lt;id&gt;.r2.dev
+R2_BUCKET=monad-updates     # optional; this is the default</pre></li>
+</ol>
+<div class="note">The base URL is baked into each build. A build published without it can never update — everyone on it has to install the next release by hand once. <code>release.sh</code> refuses to publish in that case.</div>
+
+<h2>5. Shipping a release</h2>
+<p>An official release needs all of the following in <code>app/.env</code>: the <code>ELECTROBUN_*</code> signing credentials, <code>MONAD_UPDATE_BASE_URL</code>, and <code>MONAD_GOOGLE_CLIENT_ID</code> / <code>MONAD_GOOGLE_CLIENT_SECRET</code>. Plus <code>gh auth login</code> for the GitHub release.</p>
+<pre>cd app
+./release.sh canary                 # patch bump (0.1.0 → 0.1.1) → build → publish
+./release.sh stable minor           # minor bump on the stable channel
+./release.sh canary 0.7.0           # explicit version
+./release.sh canary none            # re-publish the current version
+./release.sh canary --allow-dirty   # skip the clean-tree check (WIP canary)
+./release.sh canary --no-release    # publish the update, skip the GitHub release</pre>
+<p>The script:</p>
+<ol>
+  <li>Refuses to run on a dirty tree (so each build maps to a commit) or while a dev session is running.</li>
+  <li>Bumps the version in <code>app/electrobun.config.ts</code> and <code>app/package.json</code>, then builds.</li>
+  <li>Verifies the build before uploading anything: update URL baked in, built-in Google client baked in, Developer ID signed and notarized.</li>
+  <li>Uploads bundles and patches to R2, then the manifest <b>last</b> — the manifest flips the release live, so a half-finished upload never breaks anyone.</li>
+  <li>Commits the version bump, pushes, and creates a GitHub release with the <code>.dmg</code> attached. <code>stable</code> tags <code>vX.Y.Z</code>; <code>canary</code> tags <code>vX.Y.Z-canary</code> as a prerelease.</li>
+</ol>
+<div class="note">Keep <code>app/artifacts/</code> from the previous release in place — it's the diff base for patch generation. Losing it is harmless; the next update is just a full download instead of a few KB.</div>
+<p><b>Routine:</b> ship to <code>canary</code>, use it for a day, then <code>./release.sh stable</code>. Roll back by re-publishing the previous code under a new version — the newest manifest wins.</p>
+
+<h2>6. Troubleshooting</h2>
+<table>
+  <tr><th>Symptom</th><th>Cause / fix</th></tr>
+  <tr><td>"Updates not configured" in Settings</td><td>Built without <code>MONAD_UPDATE_BASE_URL</code>. Set it, rebuild, redistribute once.</td></tr>
+  <tr><td>"Updates disabled in dev builds"</td><td>You're running <code>electrobun dev</code>. Only packaged channel builds update.</td></tr>
+  <tr><td>"Already on latest" right after publishing</td><td>Check <code>curl &lt;baseUrl&gt;/canary-macos-arm64-update.json</code> shows the new hash (CDN cache).</td></tr>
+  <tr><td>Full-bundle download instead of a patch</td><td>The previous <code>artifacts/</code> wasn't present at build time. Harmless.</td></tr>
+  <tr><td>wrangler auth errors</td><td>Run <code>bunx wrangler login</code> again, or set <code>CLOUDFLARE_API_TOKEN</code>.</td></tr>
+  <tr><td>The build hangs at <code>electrobun sync</code></td><td>A dev session is running in the same folder. Stop it first.</td></tr>
+</table>
+</body>
+</html>

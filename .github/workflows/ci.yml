@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # Electrobun's toolchain and the app's native deps are macOS arm64 only.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install (root — Biome)
+        run: bun install --frozen-lockfile
+      - name: Lint
+        run: bun run lint
+      - name: Install (app)
+        working-directory: app
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        working-directory: app
+        run: bun run typecheck
+      - name: Test
+        working-directory: app
+        run: bun test src

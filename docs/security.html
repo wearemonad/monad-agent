@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monad — Security policy</title>
+<style>
+  :root { color-scheme: light dark; --muted: #6b7280; --line: #e5e7eb; }
+  @media (prefers-color-scheme: dark) { :root { --muted: #9ca3af; --line: #2d2f36; } }
+  body { font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 52rem; margin: 3rem auto; padding: 0 1.25rem; }
+  h1 { font-size: 1.8rem; margin-bottom: .25rem; } h2 { margin-top: 2.5rem; border-top: 1px solid var(--line); padding-top: 1.5rem; }
+  .lede { color: var(--muted); margin-top: 0; }
+  code { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  ul li { margin: .3rem 0; }
+</style>
+</head>
+<body>
+<h1>Security policy</h1>
+<p class="lede">Monad reads your email, files and business data, so we take reports seriously.</p>
+
+<h2>Reporting a vulnerability</h2>
+<p>Please <b>don't</b> open a public issue. Report privately through GitHub: <b>Security → Report a vulnerability</b> on this repository. Include what you found, how to reproduce it, and the impact you expect.</p>
+<p>We aim to acknowledge reports within 3 working days and to agree a disclosure timeline with you. Fixes ship to the latest release; older versions are not patched.</p>
+
+<h2>In scope</h2>
+<ul>
+  <li>Prompt injection that leads to actions the user didn't approve — for example, a document or email that causes file writes, data exfiltration, or wider tool access, especially in background or scheduled runs.</li>
+  <li>Escaping the permission system or a workspace's folder boundary.</li>
+  <li>Artifact sandbox escapes (network access or script execution outside the sandboxed view).</li>
+  <li>Exposure of credentials or OAuth tokens (Keychain entries, logs, the webview, crash reports).</li>
+  <li>Problems in the update channel or the release pipeline.</li>
+</ul>
+
+<h2>Out of scope</h2>
+<ul>
+  <li>Issues that need an already-compromised Mac or user account.</li>
+  <li>The embedded Google <em>desktop</em> OAuth client secret — Google doesn't treat it as confidential, and the flow is protected by PKCE.</li>
+  <li>Actions the user explicitly approved, or allowed with an "always allow" rule.</li>
+  <li>Vulnerabilities in upstream services (Anthropic, OpenAI, Google, MCP servers you connect) — report those to the vendor.</li>
+</ul>
+</body>
+</html>

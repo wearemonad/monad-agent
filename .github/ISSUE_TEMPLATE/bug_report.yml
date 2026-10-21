@@ -1,0 +1,43 @@
+name: Bug report
+description: Something in Monad doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+  - type: input
+    id: version
+    attributes:
+      label: Monad version
+      description: Settings, bottom left (e.g. "v0.6.2 · canary"), or "source" with a commit hash.
+    validations:
+      required: true
+  - type: dropdown
+    id: auth
+    attributes:
+      label: Model provider
+      options:
+        - Claude subscription (Claude Code login)
+        - Anthropic API key
+        - OpenAI (Codex)
+        - Local (Ollama)
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+  - type: textarea
+    id: logs
+    attributes:
+      label: Diagnostics
+      description: Settings → Troubleshooting → Export saves a diagnostics bundle. Check it for anything private, then drag it in here.

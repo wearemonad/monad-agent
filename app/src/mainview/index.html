@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<!-- class="dark" = the default color scheme's first paint; lib/theme.ts
+     retoggles it before first render when the saved scheme resolves light -->
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- Zero-click exfil guard: the agent renders untrusted model/document text
+         as markdown, and a remote image URL (or any remote load) would be an
+         automatic network beacon — so no remote hosts anywhere. What IS allowed
+         is what the app itself needs: `views:` is Electrobun's bundled-asset
+         scheme in packaged builds (WebKit's 'self' match is unreliable for
+         custom schemes); ws://127.0.0.1:* is Electrobun 2's RPC socket (random
+         port — 1.x used ws://localhost, and without this entry the UI stays
+         blank waiting for RPC); ws://localhost:* is Vite HMR, plus
+         http://localhost:* for the dev server; 'unsafe-eval' is required by Electrobun's
+         evaluateJavascriptWithResponse (new Function); 'unsafe-inline' covers
+         the dev react-refresh preamble. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' views:; script-src 'self' views: 'unsafe-inline' 'unsafe-eval'; style-src 'self' views: 'unsafe-inline'; img-src 'self' views: data: blob:; font-src 'self' views: data:; media-src 'self' views: data: blob:; connect-src 'self' views: ws://127.0.0.1:* ws://localhost:* http://localhost:*; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Monad</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/main.tsx"></script>
+  </body>
+</html>

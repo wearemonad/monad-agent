@@ -1,0 +1,415 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@plugin "@tailwindcss/typography";
+
+/* The dark class on <html> is owned by lib/theme.ts (color scheme). */
+@custom-variant dark (&:is(.dark *));
+
+/* Tailwind v4 theme mapping (shadcn v4 convention) — utilities like
+   bg-background / rounded-lg resolve through these. Radius scale multipliers
+   match the nova style. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  /* App accent + status tokens (no shadcn defaults for these): brand is the
+     app's indigo; warning/success/info carry the amber/emerald/sky status
+     hues. One mid-tone per hue, used for text, icons, borders and solid fills
+     — subtle surfaces layer it with an opacity modifier (e.g. bg-warning/15). */
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* shadcn/ui theme. The color scheme (Settings → Appearance) toggles the
+   `dark` class on <html>: this :root set is the light scheme, `.dark` below
+   is the dark one — both are the default "Carbon" palette (neutral gray
+   surfaces, indigo brand). The other themes in lib/theme.ts override these
+   properties inline on <html>, one override set per scheme.
+   --radius 0.625rem is nova's default. */
+:root {
+  /* Window-chrome geometry, shared by both panes. The macOS traffic lights are
+     placed by the system (titleBarStyle "hiddenInset") and nudged further by
+     the trafficLightOffset in src/bun/index.ts; --titlebar-toggle-x parks the
+     sidebar toggle just past them, and --titlebar-content-x is where each
+     pane's own content may start. The toggle holds one position whether the
+     sidebar is open or closed, so both panes have to agree on these. */
+  --titlebar-toggle-x: 90px;
+  --titlebar-content-x: 130px;
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.215 22);
+  --destructive-foreground: oklch(0.985 0 0);
+  --brand: oklch(0.585 0.21 277);
+  --brand-foreground: oklch(0.985 0.005 277);
+  --warning: oklch(0.66 0.125 76);
+  --warning-foreground: oklch(0.145 0 0);
+  --success: oklch(0.6 0.115 155);
+  --success-foreground: oklch(0.145 0 0);
+  --info: oklch(0.6 0.1 235);
+  --info-foreground: oklch(0.985 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.66 0.1 277);
+  --chart-1: oklch(0.585 0.21 277);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.585 0.21 277);
+  --sidebar-primary-foreground: oklch(0.985 0.005 277);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.66 0.1 277);
+  /* Find-in-page marker: solid yellow + dark ink reads on any surface. */
+  --highlight: oklch(0.85 0.17 90);
+  --highlight-foreground: oklch(0.22 0.02 90);
+}
+
+/* "Carbon" — the default theme (Settings → Appearance). The app's original
+   pure-neutral grays kept verbatim; only the brand was retuned (indigo
+   brightened from 0.585 0.233 277 and given a dark foreground) and the
+   primary carries a whisper of indigo tint. The status hues stay pulled off
+   the Tailwind defaults toward gold / sage / dusty blue and are shared by
+   every theme. Themes override these inline. */
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.93 0.01 277);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.67 0.175 16);
+  --destructive-foreground: oklch(0.985 0.005 20);
+  --brand: oklch(0.68 0.17 277);
+  --brand-foreground: oklch(0.185 0.045 277);
+  --warning: oklch(0.8 0.128 80);
+  --warning-foreground: oklch(0.175 0.02 70);
+  --success: oklch(0.745 0.115 152);
+  --success-foreground: oklch(0.16 0.02 155);
+  --info: oklch(0.72 0.1 225);
+  --info-foreground: oklch(0.16 0.02 230);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.585 0.13 277);
+  --chart-1: oklch(0.68 0.17 277);
+  --chart-2: oklch(0.745 0.115 152);
+  --chart-3: oklch(0.8 0.128 80);
+  --chart-4: oklch(0.65 0.12 300);
+  --chart-5: oklch(0.72 0.1 225);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.68 0.17 277);
+  --sidebar-primary-foreground: oklch(0.185 0.045 277);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.585 0.13 277);
+  --highlight: oklch(0.85 0.17 90);
+  --highlight-foreground: oklch(0.22 0.02 90);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    /* antialiased here (not per-component): dialog/menu portals mount on
+		   document.body, outside the app root's font smoothing. */
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+/* Typography (`prose`) inked from the design tokens, so markdown follows the
+   active scheme AND theme instead of the plugin's hardcoded gray ramps.
+   `prose-invert` is unused and must stay unused — this mapping is already
+   scheme-aware because the tokens are. */
+.prose {
+  --tw-prose-body: var(--foreground);
+  --tw-prose-headings: var(--foreground);
+  --tw-prose-lead: var(--muted-foreground);
+  --tw-prose-links: var(--brand);
+  --tw-prose-bold: var(--foreground);
+  --tw-prose-counters: var(--muted-foreground);
+  --tw-prose-bullets: var(--muted-foreground);
+  --tw-prose-hr: var(--border);
+  --tw-prose-quotes: var(--foreground);
+  --tw-prose-quote-borders: var(--border);
+  --tw-prose-captions: var(--muted-foreground);
+  --tw-prose-kbd: var(--foreground);
+  --tw-prose-code: var(--foreground);
+  --tw-prose-pre-code: var(--foreground);
+  --tw-prose-pre-bg: var(--card);
+  --tw-prose-th-borders: var(--border);
+  --tw-prose-td-borders: var(--border);
+}
+
+/* Scrollbars, everywhere. Left alone, WKWebView draws the macOS overlay bar —
+   which on hover swells into a light grey track that reads as a foreign panel
+   edge against a dark app. Styling the webkit pseudo-elements opts out of the
+   overlay entirely, so the bar is always present but quiet: a transparent
+   track, and a thumb tinted from --foreground so it follows the theme instead
+   of being hard-coded per mode.
+
+   Deliberately no `scrollbar-width`/`scrollbar-color`: Safari ignores the
+   ::-webkit-scrollbar rules below the moment either standard property is set,
+   and the standard ones can't do the inset-thumb trick. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  /* The transparent border plus padding-box clipping is what insets the thumb:
+     a 6px bar floating in a 10px gutter, rather than one filling the channel
+     edge to edge. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 8px;
+  background-color: color-mix(in oklch, var(--foreground) 18%, transparent);
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklch, var(--foreground) 30%, transparent);
+}
+::-webkit-scrollbar-thumb:active {
+  background-color: color-mix(in oklch, var(--foreground) 42%, transparent);
+}
+/* No stepper arrows — macOS has none, and WebKit would otherwise reserve
+   space for them at the ends of the track. */
+::-webkit-scrollbar-button {
+  display: none;
+}
+/* Scroll containers with no visible bar at all (the sidebar thread list — its
+   fade overlays signal the overflow instead). display:none on the webkit
+   pseudo-element rather than `scrollbar-width: none`, which would disable
+   every ::-webkit-scrollbar rule above (see note). Scrolling still works. */
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+}
+
+/* A flex item's automatic minimum size is its content's min-content width, and
+   the library leaves the panel element at overflow:visible — so a panel whose
+   contents have a hard width (the sidebar pins one while sliding) refuses to
+   shrink past it, and collapsing silently springs back. Panels always clip
+   their own contents here, so a zero floor is what we want in every case.
+   Stays above the rule below: the lower-specificity selector has to come
+   first or it can never apply. */
+[data-panel] {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Sidebar collapse/expand slide. react-resizable-panels sizes panels by
+   writing flex-grow inline onto the panel elements, so flex-grow is what there
+   is to transition — and it has to be done from a stylesheet because the
+   library owns both the element's style attribute and its className.
+   The class is only present while a toggle is in flight, never during a drag,
+   which has to track the pointer exactly. */
+.panels-animating > [data-panel] {
+  transition: flex-grow 220ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+/* Reduced motion: the panel snaps to its new width. A width slide has no
+   opacity equivalent, and the contents are already clipped by the panel. */
+@media (prefers-reduced-motion: reduce) {
+  .panels-animating > [data-panel] {
+    transition: none;
+  }
+}
+
+/* nova style utilities referenced by the ui wrappers (extracted from
+   shadcn-ui/ui apps/v4/registry/styles/style-nova.css — cn-menu-target and
+   cn-font-heading are inert markers there and need no rules). */
+.cn-menu-translucent {
+  @apply animate-none! relative bg-popover/70 before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-[inherit] before:backdrop-blur-2xl before:backdrop-saturate-150 **:data-[slot$=-item]:focus:bg-foreground/10 **:data-[slot$=-item]:data-highlighted:bg-foreground/10 **:data-[slot$=-separator]:bg-foreground/5 **:data-[slot$=-trigger]:focus:bg-foreground/10 **:data-[slot$=-trigger]:aria-expanded:bg-foreground/10! **:data-[variant=destructive]:focus:bg-destructive! **:data-[variant=destructive]:focus:text-destructive-foreground! **:data-[variant=destructive]:focus:**:text-destructive-foreground! **:data-[variant=destructive]:data-highlighted:bg-destructive! **:data-[variant=destructive]:data-highlighted:text-destructive-foreground! **:data-[variant=destructive]:data-highlighted:**:text-destructive-foreground!;
+}
+.cn-rtl-flip {
+  @apply rtl:-scale-x-100;
+}
+
+/* Search-hit highlighting in the conversation (CSS Custom Highlight API —
+   ranges registered by ChatPane, no DOM mutation). Only a handful of
+   properties apply inside ::highlight; background + color is all we need. */
+::highlight(search-term) {
+  background-color: var(--highlight);
+  color: var(--highlight-foreground);
+}
+
+/* Sidebar thread rows' first-load entrance, applied per row with a small
+   animation-delay stagger (fill-mode `both` in the utility keeps delayed rows
+   invisible until their turn). */
+@keyframes thread-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Reduced motion keeps every enter/exit as a plain opacity cross-fade.
+   tw-animate-css builds its enter/exit keyframes from these variables, so
+   zeroing the movement ones here strips the zoom/slide/blur from every
+   dialog, menu, select and combobox at once while their fade still runs.
+   The thread-row entrance is redefined the same way. */
+/* biome-ignore-start lint/complexity/noImportantStyles: must beat every utility's own enter/exit values */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    --tw-enter-scale: 1 !important;
+    --tw-exit-scale: 1 !important;
+    --tw-enter-translate-x: 0 !important;
+    --tw-enter-translate-y: 0 !important;
+    --tw-exit-translate-x: 0 !important;
+    --tw-exit-translate-y: 0 !important;
+    --tw-enter-rotate: 0 !important;
+    --tw-exit-rotate: 0 !important;
+    --tw-enter-blur: 0 !important;
+    --tw-exit-blur: 0 !important;
+  }
+  /* biome-ignore-end lint/complexity/noImportantStyles: reduced-motion overrides */
+  @keyframes thread-enter {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+}
+
+/* The pre-nova custom .dialog-fade animation is gone: dialogs now use the
+   nova style's 100ms fade+zoom (tw-animate-css). The Tailwind v3-era bug it
+   worked around (animate keyframes overwriting a translate-centered panel's
+   `transform`) no longer exists — v4's translate-* utilities use the
+   standalone `translate` property, which keyframe `transform` cannot clobber. */
+
+/* Icons follow the UI zoom (lib/zoom.ts): lucide's size={N} prop — and the
+   custom icons in lib/icons.tsx, which share the contract — renders as px
+   width/height ATTRIBUTES on the svg, which the root font-size scale can't
+   reach. Each attribute value used in the app is remapped here to its rem
+   equivalent (N/16 — pixel-identical at 100% zoom). A size={N} with no row
+   here stays fixed-px, so add a row when introducing a new icon size.
+   MUST live in the base layer: un-layered rules would beat Tailwind's layered
+   utilities regardless of specificity, overriding class-based sizing (size-4,
+   the [&_svg]:size-* forcings in button/select/dropdown, the sidebar toggle's
+   px pin in AppRoot). In `base` the remap still wins over the svg's
+   presentation attributes — any author CSS does — but keeps losing to every
+   utility class, exactly as the attributes themselves did. */
+@layer base {
+  svg[width="9"] {
+    width: 0.5625rem;
+    height: 0.5625rem;
+  }
+  svg[width="10"] {
+    width: 0.625rem;
+    height: 0.625rem;
+  }
+  svg[width="11"] {
+    width: 0.6875rem;
+    height: 0.6875rem;
+  }
+  svg[width="12"] {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+  svg[width="13"] {
+    width: 0.8125rem;
+    height: 0.8125rem;
+  }
+  svg[width="14"] {
+    width: 0.875rem;
+    height: 0.875rem;
+  }
+  svg[width="15"] {
+    width: 0.9375rem;
+    height: 0.9375rem;
+  }
+  svg[width="16"] {
+    width: 1rem;
+    height: 1rem;
+  }
+  svg[width="18"] {
+    width: 1.125rem;
+    height: 1.125rem;
+  }
+  svg[width="24"] {
+    width: 1.5rem;
+    height: 1.5rem;
+  }
+  svg[width="40"] {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+}

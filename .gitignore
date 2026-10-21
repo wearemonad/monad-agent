@@ -1,0 +1,34 @@
+node_modules/
+dist/
+build/
+*.log
+.env
+.envrc
+.DS_Store
+
+# workspace runtime content — originals and drafts may hold sensitive client data;
+# keep them out of git until a private remote is decided
+workspaces/*/inbox/*
+!workspaces/*/inbox/.gitkeep
+workspaces/*/knowledge/originals/*
+!workspaces/*/knowledge/originals/.gitkeep
+workspaces/*/outbox/*
+!workspaces/*/outbox/.gitkeep
+artifacts
+
+# memory-system runtime state: the search index is a disposable cache, and
+# auto-captured daily logs hold raw conversation content
+workspaces/*/.monad/
+workspaces/*/knowledge/notes/daily/
+
+# Electrobun 2 devkit/toolchain state projected by Hutch (bunx electrobun sync)
+.hutch/
+# Per-process scratch the Hutch engine writes into the project
+# (.cottontail-tmp/electrobun/<pid>/) — left behind when a build is interrupted
+.cottontail-tmp/
+
+# Rendered video output from the recording harness
+app/video/out/
+
+# Private planning docs, spikes and notes — kept locally, never published
+internal/

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monad — Google OAuth setup</title>
+<style>
+  :root { color-scheme: light dark; --muted: #6b7280; --line: #e5e7eb; --accent: #4f46e5; --box: #f5f5f7; }
+  @media (prefers-color-scheme: dark) { :root { --muted: #9ca3af; --line: #2d2f36; --box: #1b1c21; } }
+  body { font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 52rem; margin: 3rem auto; padding: 0 1.25rem; }
+  h1 { font-size: 1.8rem; margin-bottom: .25rem; } h2 { margin-top: 2.5rem; border-top: 1px solid var(--line); padding-top: 1.5rem; }
+  .lede { color: var(--muted); margin-top: 0; }
+  code, pre { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { background: var(--box); padding: .9rem 1rem; border-radius: 8px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; } th, td { text-align: left; vertical-align: top; padding: .5rem .6rem; border-bottom: 1px solid var(--line); }
+  .note { background: var(--box); border-left: 3px solid var(--accent); padding: .75rem 1rem; border-radius: 4px; }
+  ol li, ul li { margin: .3rem 0; }
+</style>
+</head>
+<body>
+<h1>Google OAuth setup</h1>
+<p class="lede">How "Connect Google account" works, how to bring your own Google client, and how official builds ship one.</p>
+
+<h2>1. How it works</h2>
+<p>Each workspace connects its own Google account (Drive, Gmail, Calendar). Monad uses the standard native-app flow — OAuth 2.0 with PKCE and a loopback redirect on <code>127.0.0.1</code>. The refresh token goes into your macOS Keychain, keyed per workspace. Nothing touches a server; disconnecting or removing a workspace deletes its tokens.</p>
+<p>An OAuth <em>client</em> is the app's identity with Google, not yours. There are two ways Monad gets one:</p>
+<table>
+  <tr><th>Build</th><th>Google client</th><th>What you do</th></tr>
+  <tr><td>Official release (signed <code>.dmg</code> from GitHub Releases)</td><td>Built in, baked in at build time</td><td>Nothing — click <b>Connect Google account</b>.</td></tr>
+  <tr><td>Built from source, or a fork</td><td>None</td><td>Create your own client (§2) and paste it into <b>Settings → Google → OAuth client</b>.</td></tr>
+</table>
+<p>Any build can override the built-in client in <b>Settings → Google</b>. Leave both fields empty and save to fall back to the built-in one.</p>
+
+<h2>2. Bring your own client (~10 minutes)</h2>
+<p>Do this in any Google account you control. It is unrelated to which accounts you later connect.</p>
+<ol>
+  <li><b>Project and APIs.</b> At <a href="https://console.cloud.google.com/">console.cloud.google.com</a>, create a project (e.g. "Monad"). Under <b>APIs &amp; Services → Library</b>, enable the <b>Google Drive API</b>, <b>Gmail API</b> and <b>Google Calendar API</b>.</li>
+  <li><b>Branding and audience.</b> Open <b>Google Auth Platform</b> (APIs &amp; Services → OAuth consent screen). Set the app name and support email. Pick an audience:
+    <ul>
+      <li><b>Internal</b> — only if your account is on <b>Google Workspace</b> and only people in your organization will connect. No verification, no warning screen, no user cap. <em>Best choice for companies.</em></li>
+      <li><b>External</b> — for personal Gmail accounts. See §3 for what this means.</li>
+    </ul>
+  </li>
+  <li><b>Scopes</b> (sidebar → <b>Data Access</b> → Add or remove scopes → "Manually add scopes"):
+<pre>https://www.googleapis.com/auth/drive.readonly
+https://www.googleapis.com/auth/gmail.readonly
+https://www.googleapis.com/auth/gmail.compose
+https://www.googleapis.com/auth/calendar.events
+openid</pre>
+    The picker only lists scopes of APIs you've enabled, so do step 1 first. Gmail and Drive land under "Restricted scopes" — that's expected.</li>
+  <li><b>External only — test users or publish.</b> Either add every Google account that will connect under <b>Audience → Test users</b> (up to 100), or click <b>Publish app</b> (see §3).</li>
+  <li><b>The client.</b> <b>Clients → Create client → Application type: Desktop app</b>. Copy the <b>Client ID</b> and <b>Client secret</b>.</li>
+  <li>In Monad: <b>Settings → Google → OAuth client</b>, paste both, <b>Save</b>. The secret goes to your Keychain. Then connect an account from <b>Settings → Workspaces</b>.</li>
+</ol>
+
+<h2>3. Publishing status and verification</h2>
+<p>Gmail and Drive scopes are <em>restricted</em> in Google's terms. For an <b>External</b> client, that decides how the consent screen behaves:</p>
+<table>
+  <tr><th>Status</th><th>Behaviour</th><th>Good for</th></tr>
+  <tr><td><b>Testing</b></td><td>Only listed test users (≤100) can connect. Refresh tokens <b>expire after 7 days</b>, so each workspace needs reconnecting weekly.</td><td>Trying it out.</td></tr>
+  <tr><td><b>In production, unverified</b></td><td>Tokens don't expire. Users see a "Google hasn't verified this app" screen once (<b>Advanced → Go to …</b>). Limited to <b>100 users in total</b>.</td><td>Yourself, a small team.</td></tr>
+  <tr><td><b>Verified</b></td><td>No warning, no cap. Requires brand verification and — for restricted scopes — an annual third-party CASA security assessment.</td><td>Broad public distribution.</td></tr>
+</table>
+<div class="note"><b>Using your own client for yourself or your team?</b> On Google Workspace, use <b>Internal</b> and you skip all of this. On personal Gmail, publish the app unverified — the one-time warning is about <em>your own</em> client, so you know who you're trusting.</div>
+
+<h2>4. Official builds (maintainers)</h2>
+<p>Release builds bake a client in at build time; it is never committed to source. In <code>app/.env</code>:</p>
+<pre>MONAD_GOOGLE_CLIENT_ID=…apps.googleusercontent.com
+MONAD_GOOGLE_CLIENT_SECRET=GOCSPX-…</pre>
+<p><code>electrobun.config.ts</code> injects these via the bundler's <code>define</code>, and <code>release.sh</code> refuses to publish without them. Per Google's documentation, desktop-app client secrets are not treated as confidential (PKCE protects the flow), but keeping them out of source means forks don't run on — and use up the user cap of — the official project.</p>
+
+<h2>5. What the agent can do once connected</h2>
+<table>
+  <tr><th>Tool</th><th>Capability</th><th>Guardrail</th></tr>
+  <tr><td><code>gmail_search</code>, <code>gmail_read</code></td><td>Find and read mail</td><td>Read-only scope</td></tr>
+  <tr><td><code>gmail_create_draft</code></td><td>Create drafts for review</td><td>The agent cannot send. Sending is a human click on a draft card.</td></tr>
+  <tr><td><code>calendar_list_events</code>, <code>calendar_create_event</code></td><td>Read the week, book meetings</td><td>Creating events asks for permission</td></tr>
+  <tr><td>Drive folder sync</td><td>A chosen folder fills the workspace inbox every 5 minutes</td><td>Read-only scope, one folder per workspace</td></tr>
+</table>
+
+<h2>6. Troubleshooting</h2>
+<table>
+  <tr><th>Symptom</th><th>Fix</th></tr>
+  <tr><td>"This build of Monad has no built-in Google client"</td><td>You're on a source build. Add your own client (§2).</td></tr>
+  <tr><td>"Access blocked: … has not completed the Google verification process"</td><td>Testing mode and the account isn't a test user. Add it, or publish the app (§3).</td></tr>
+  <tr><td>Connection stops working after about a week</td><td>Still in Testing → 7-day token expiry. Publish the app, then reconnect once.</td></tr>
+  <tr><td>"Google hasn't verified this app"</td><td>Expected for unverified production clients: <b>Advanced → Go to …</b>, once per account.</td></tr>
+  <tr><td>Asked to reconnect after an update</td><td>Monad's scopes changed; new scopes need fresh consent. Disconnect and reconnect on the workspace.</td></tr>
+</table>
+</body>
+</html>
