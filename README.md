@@ -104,6 +104,6 @@ Issues and pull requests are welcome — see [docs/CONTRIBUTING.md](docs/CONTRIB
 
 ## License
 
-[Apache License 2.0](LICENSE). Copyright © 2026 Pixel Bucket Ltd, trading as We Are Monad.
+[Apache License 2.0](LICENSE). Copyright © 2026 Pixel Bucket Ltd, trading as We Are Monad, and contributors.
 
 We Are Monad® is a registered trademark of Pixel Bucket Ltd. The license covers the code, not the name or logo — if you distribute a fork, please give it your own name and icon.
