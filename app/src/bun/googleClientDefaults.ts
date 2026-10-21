@@ -6,7 +6,7 @@
  *  (electrobun.config.ts `define`s MONAD_GOOGLE_CLIENT_ID / _SECRET from
  *  app/.env, which release.sh exports). Builds from source without them simply
  *  have no built-in client: Settings → Google then asks for your own
- *  "Desktop app" client — see docs/google-oauth.html.
+ *  "Desktop app" client — see docs/google-oauth.md.
  *
  *  Per Google's OAuth docs, desktop client secrets are not treated as
  *  confidential (PKCE protects the flow); they stay out of source so forks

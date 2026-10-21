@@ -3498,7 +3498,7 @@ function GoogleClientSection() {
             <p className="text-xs text-muted-foreground">
               {settings.googleClientBuiltIn
                 ? "Advanced: override the built-in client (development/testing). Leave both fields empty and Save to fall back to the built-in one."
-                : "Bring your own Google client: in Google Cloud Console enable the Drive, Gmail and Calendar APIs, then create an OAuth client of type 'Desktop app' and paste its ID and secret here. On Google Workspace, choose the 'Internal' audience and nobody sees an unverified-app warning. Full walkthrough: docs/google-oauth.html in the Monad repo."}
+                : "Bring your own Google client: in Google Cloud Console enable the Drive, Gmail and Calendar APIs, then create an OAuth client of type 'Desktop app' and paste its ID and secret here. On Google Workspace, choose the 'Internal' audience and nobody sees an unverified-app warning. Full walkthrough: docs/google-oauth.md in the Monad repo."}
             </p>
             <Field>
               <FieldLabel htmlFor="google-client-id">Client ID</FieldLabel>

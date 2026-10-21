@@ -1,6 +1,6 @@
-# Monad — a Claude brain for your business
+# Monad Agent — a Claude brain for your business
 
-Monad is a macOS app that turns a folder into a company brain. Drop in contracts, notes, invoices and exports; Monad files them into a searchable knowledge base, and a Claude agent works on top of it — answering with citations, drafting emails and contracts, reading your CRM and analytics, and running scheduled jobs like a morning briefing.
+Monad Agent is a macOS app that turns a folder into a company brain. Drop in contracts, notes, invoices and exports; Monad Agent files them into a searchable knowledge base, and a Claude agent works on top of it — answering with citations, drafting emails and contracts, reading your CRM and analytics, and running scheduled jobs like a morning briefing.
 
 Everything stays on your Mac. The brain is a plain folder of Markdown files, so it also works directly in [Claude Code](https://claude.com/claude-code).
 
@@ -20,9 +20,9 @@ Everything stays on your Mac. The brain is a plain folder of Markdown files, so 
 
 ## Install
 
-Download the latest signed build from [Releases](../../releases), open the `.dmg`, and drag Monad to Applications. Official builds update themselves and come with Google sign-in built in.
+Download the latest signed build from [Releases](../../releases), open the `.dmg`, and drag Monad Agent to Applications. Official builds update themselves and come with Google sign-in built in.
 
-Then, in Monad:
+Then, in Monad Agent:
 
 1. **Settings → Providers** — sign in to Claude (see [Auth modes](#auth-modes)).
 2. **Settings → Workspaces → Create new workspace** — scaffolds a brain folder from the built-in template.
@@ -50,20 +50,20 @@ Other commands (run in `app/`):
 | `bun run build:canary` | Packaged `.app` + `.dmg` in `app/build/` and `app/artifacts/` |
 | `bun run lint` (repo root) | Biome lint + format check |
 
-Source builds have **no built-in Google client** and **no update feed**. To use Gmail, Calendar or Drive, create your own Google OAuth client (about 10 minutes) and paste it into **Settings → Google** — see [docs/google-oauth.html](docs/google-oauth.html).
+Source builds have **no built-in Google client** and **no update feed**. To use Gmail, Calendar or Drive, create your own Google OAuth client (about 10 minutes) and paste it into **Settings → Google** — see [docs/google-oauth.md](docs/google-oauth.md).
 
-Unsigned builds need a one-time **right-click → Open** on first launch (Gatekeeper). To sign, notarize and publish updates for your own distribution, see [docs/releasing.html](docs/releasing.html).
+Unsigned builds need a one-time **right-click → Open** on first launch (Gatekeeper). To sign, notarize and publish updates for your own distribution, see [docs/releasing.md](docs/releasing.md).
 
 ## Auth modes
 
-Monad never proxies anyone's account through a server. Each person authenticates on their own machine.
+Monad Agent never proxies anyone's account through a server. Each person authenticates on their own machine.
 
-- **Claude subscription (default)** — drives your locally installed, logged-in Claude Code binary, using your Pro/Max plan. Monad finds `claude` automatically (`~/.local/bin`, Homebrew, or your login-shell `PATH`); override with `MONAD_CLAUDE_BIN`. Note: Anthropic's terms restrict using consumer subscriptions outside its own apps. Driving the genuine local CLI currently works, but it is not an officially sanctioned integration and may stop working. If that matters to you, use an API key.
+- **Claude subscription (default)** — drives your locally installed, logged-in Claude Code binary, using your Pro/Max plan. Monad Agent finds `claude` automatically (`~/.local/bin`, Homebrew, or your login-shell `PATH`); override with `MONAD_CLAUDE_BIN`. Note: Anthropic's terms restrict using consumer subscriptions outside its own apps. Driving the genuine local CLI currently works, but it is not an officially sanctioned integration and may stop working. If that matters to you, use an API key.
 - **Anthropic API key** — the Agent SDK's bundled runtime with your key (stored in the macOS Keychain). Pay per token; fully sanctioned.
 - **Local (Ollama)** — run background work such as ingest and summaries on a local model.
 - **OpenAI (Codex)** — OpenAI models through the Codex SDK, with your own Codex login.
 
-Never share one subscription across people or put Monad behind a server.
+Never share one subscription across people or put Monad Agent behind a server.
 
 ## Workspaces
 
@@ -88,7 +88,7 @@ outbox/            drafts for human review — nothing is ever sent automaticall
 
 ## Architecture
 
-Monad is built with [Electrobun](https://github.com/blackboardsh/electrobun): a Bun main process plus a native WebKit webview.
+Monad Agent is built with [Electrobun](https://github.com/blackboardsh/electrobun): a Bun main process plus a native WebKit webview.
 
 - `app/src/bun/` — the main process owns everything: `AgentService` (Claude Agent SDK lifecycle → normalized stream events), `PermissionBroker` (tool approvals), `WorkspaceManager`, `SessionStore`, `SchedulerService`, `MemoryIndexService`, Google services, and auth strategies. Built on [Effect](https://effect.website).
 - `app/src/mainview/` — the React UI (Tailwind, shadcn/ui on Base UI, Zustand). It never touches the SDK; it talks to the bun process over typed RPC.
@@ -96,11 +96,11 @@ Monad is built with [Electrobun](https://github.com/blackboardsh/electrobun): a 
 
 ## Privacy
 
-Monad has no backend and no telemetry. Your files, index and chats stay on your Mac; credentials and OAuth tokens live in the macOS Keychain. Content you work with is sent to the model provider you choose (Anthropic, OpenAI, or nothing when running locally) and to the services you connect.
+Monad Agent has no backend and no telemetry. Your files, index and chats stay on your Mac; credentials and OAuth tokens live in the macOS Keychain. Content you work with is sent to the model provider you choose (Anthropic, OpenAI, or nothing when running locally) and to the services you connect.
 
 ## Contributing
 
-Issues and pull requests are welcome — see [docs/contributing.html](docs/contributing.html). To report a security issue privately, see [docs/security.html](docs/security.html).
+Issues and pull requests are welcome — see [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md). To report a security issue privately, see [docs/SECURITY.md](docs/SECURITY.md).
 
 ## License
 

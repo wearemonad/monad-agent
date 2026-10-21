@@ -22,7 +22,7 @@
 # the release uses the account that owns the origin repo (not whichever is
 # active); set GH_ACCOUNT=<login> or GH_TOKEN to choose another.
 #
-# Requirements (one-time): `bunx wrangler login`, `gh auth login`, bucket created (see docs/releasing.html),
+# Requirements (one-time): `bunx wrangler login`, `gh auth login`, bucket created (see docs/releasing.md),
 # MONAD_UPDATE_BASE_URL set in app/.env, R2_BUCKET below matching your bucket name.
 #
 # IMPORTANT: keep the artifacts/ folder from the previous release in place before
@@ -75,13 +75,13 @@ if [[ -f .env ]]; then
 fi
 if [[ -z "${MONAD_UPDATE_BASE_URL:-}" ]]; then
 	echo "⚠️  MONAD_UPDATE_BASE_URL is not set in app/.env — the build will not be" >&2
-	echo "    update-capable. Set it first (see docs/releasing.html), then re-run." >&2
+	echo "    update-capable. Set it first (see docs/releasing.md), then re-run." >&2
 	exit 1
 fi
 if [[ -z "${MONAD_GOOGLE_CLIENT_ID:-}" || -z "${MONAD_GOOGLE_CLIENT_SECRET:-}" ]]; then
 	echo "⚠️  MONAD_GOOGLE_CLIENT_ID / MONAD_GOOGLE_CLIENT_SECRET are not set in app/.env —" >&2
 	echo "    the release would ship without a built-in Google client, and every user" >&2
-	echo "    would have to bring their own. Set them (see docs/google-oauth.html)." >&2
+	echo "    would have to bring their own. Set them (see docs/google-oauth.md)." >&2
 	exit 1
 fi
 

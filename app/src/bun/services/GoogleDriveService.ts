@@ -272,7 +272,7 @@ export class GoogleDriveService {
     const clientSecret = this.settings.getGoogleClientSecret();
     if (!clientId || !clientSecret) {
       throw new Error(
-        "This build of Monad has no built-in Google client. Add your own in Settings → Google → OAuth client (walkthrough: docs/google-oauth.html in the Monad repo).",
+        "This build of Monad has no built-in Google client. Add your own in Settings → Google → OAuth client (walkthrough: docs/google-oauth.md in the Monad repo).",
       );
     }
     const verifier = randomBytes(48).toString("base64url");

@@ -81,7 +81,7 @@ export default {
   release: {
     // Where packaged apps poll for updates + the diff base for patch generation.
     // Set MONAD_UPDATE_BASE_URL in app/.env once the R2 bucket exists — see
-    // docs/releasing.html. Electrobun 2 does NOT load app/.env itself; release.sh
+    // docs/releasing.md. Electrobun 2 does NOT load app/.env itself; release.sh
     // exports it before building and refuses to publish a build without it.
     // IMPORTANT: baseUrl must live under `release`, not `build` — electrobun reads
     // release.baseUrl, and a misplaced baseUrl is silently ignored ("No baseUrl

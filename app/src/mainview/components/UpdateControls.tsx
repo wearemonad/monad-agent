@@ -174,7 +174,7 @@ export function UpdateControls({
       ) : !settings.updatesConfigured ? (
         <p
           className="text-[0.625rem] text-muted-foreground"
-          title="This build was published without an update URL, so it can't check for updates. Install the latest release manually once — see docs/releasing.html in the Monad repo"
+          title="This build was published without an update URL, so it can't check for updates. Install the latest release manually once — see docs/releasing.md in the Monad repo"
         >
           Updates not configured (no baseUrl).
         </p>
