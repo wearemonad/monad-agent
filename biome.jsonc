@@ -70,14 +70,6 @@
       // not ours to diverge from. Still formatted, just not linted.
       "includes": ["app/src/mainview/components/ui/**"],
       "linter": { "enabled": false }
-    },
-    {
-      // The video stage orders rules by scene, not by specificity — later
-      // scenes deliberately restyle elements an earlier scene set up.
-      "includes": ["app/video/**/*.css"],
-      "linter": {
-        "rules": { "style": { "noDescendingSpecificity": "off" } }
-      }
     }
   ]
 }

@@ -93,7 +93,6 @@ Monad is built with [Electrobun](https://github.com/blackboardsh/electrobun): a 
 - `app/src/bun/` — the main process owns everything: `AgentService` (Claude Agent SDK lifecycle → normalized stream events), `PermissionBroker` (tool approvals), `WorkspaceManager`, `SessionStore`, `SchedulerService`, `MemoryIndexService`, Google services, and auth strategies. Built on [Effect](https://effect.website).
 - `app/src/mainview/` — the React UI (Tailwind, shadcn/ui on Base UI, Zustand). It never touches the SDK; it talks to the bun process over typed RPC.
 - `app/src/shared/` — the contract both sides compile against (`ipc.ts`) plus shared pure logic.
-- `app/video/` — a scripted recording harness for product videos (mock backend, not shipped).
 
 ## Privacy
 

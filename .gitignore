@@ -27,8 +27,8 @@ workspaces/*/knowledge/notes/daily/
 # (.cottontail-tmp/electrobun/<pid>/) — left behind when a build is interrupted
 .cottontail-tmp/
 
-# Rendered video output from the recording harness
-app/video/out/
+# Internal video recording harness — used to make product videos, not published
+app/video/
 
 # Private planning docs, spikes and notes — kept locally, never published
 internal/
