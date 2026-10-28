@@ -9,8 +9,8 @@ The persistent knowledge + tooling workspace for the company. Works directly in 
 
    ```sh
    # e.g. in ~/.zshrc, or a .envrc if you use direnv
-   export TWENTY_BASE_URL="https://<your-twenty-instance>"   # e.g. https://api.twenty.com or self-hosted URL
-   export TWENTY_API_KEY="..."                                # Twenty → Settings → Developers → API keys
+   export TWENTY_BASE_URL="https://<your-twenty-instance>"   # e.g. https://acme.twenty.com or your self-hosted URL
+   export TWENTY_API_KEY="..."                                # Twenty → Settings → Developers → API
    export POSTHOG_PERSONAL_API_KEY="phx_..."                  # PostHog → Settings → Personal API keys
    ```
 
@@ -27,7 +27,7 @@ The persistent knowledge + tooling workspace for the company. Works directly in 
 ## Layout
 
 - `CLAUDE.md` — company identity, tone, operating rules (loaded into every session)
-- `.mcp.json` — Twenty CRM + PostHog MCP servers
+- `.mcp.json` — Twenty CRM (its official `/mcp` server) + PostHog MCP servers
 - `.claude/skills/` — ingest · crm-status · draft-contract · analytics-report · brain-search
 - `inbox/` — file dump (Drive-synced); processed by `ingest`
 - `knowledge/` — the brain: processed markdown docs + `INDEX.md` catalog + archived `originals/`

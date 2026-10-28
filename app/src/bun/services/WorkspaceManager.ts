@@ -32,6 +32,7 @@ import { EMAIL_ALLOW_RULE } from "../../shared/email";
 import { MEMORY_ALLOW_RULE } from "../../shared/memory";
 import { readJsonAtomic, writeJsonAtomic } from "./atomicJson";
 import { localDateKey } from "./SchedulerService";
+import { upgradeLegacyTwenty } from "./McpConfig";
 
 type DriveLink = {
   email: string;
@@ -143,6 +144,7 @@ export class WorkspaceManager {
     this.migrateMemoryTools();
     this.migrateWorkingMemory();
     this.migrateKnowledgeGraph();
+    this.migrateTwentyMcp();
     if (
       this.registry.workspaces.length === 0 &&
       defaultWorkspacePath &&
@@ -1392,6 +1394,23 @@ export class WorkspaceManager {
     for (const w of this.registry.workspaces) {
       if (w.alwaysAllow && !w.alwaysAllow.includes(EMAIL_ALLOW_RULE)) {
         w.alwaysAllow.push(EMAIL_ALLOW_RULE);
+      }
+    }
+    this.registry.migrations = [...(this.registry.migrations ?? []), FLAG];
+    this.save();
+  }
+
+  /** One-time switch of the `twenty` connector from the community npx server
+   *  to Twenty's official MCP endpoint. Only the exact entry we scaffolded is
+   *  rewritten; a hand-customised one is left alone. */
+  private migrateTwentyMcp(): void {
+    const FLAG = "twenty-official-mcp-v1";
+    if (this.registry.migrations?.includes(FLAG)) return;
+    for (const w of this.registry.workspaces) {
+      try {
+        upgradeLegacyTwenty(w.path);
+      } catch {
+        // workspace folder missing/unwritable — surfaced by health checks
       }
     }
     this.registry.migrations = [...(this.registry.migrations ?? []), FLAG];

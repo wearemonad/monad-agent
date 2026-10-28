@@ -495,6 +495,35 @@ describe("knowledge-graph migration", () => {
   });
 });
 
+describe("twenty MCP migration", () => {
+  test("rewrites a scaffolded legacy twenty entry once", () => {
+    const registryFile = path.join(
+      fakeHome,
+      "Library/Application Support/Monad/workspaces.json",
+    );
+    const mcpFile = path.join(wsDir, ".mcp.json");
+    const doc = JSON.parse(fs.readFileSync(mcpFile, "utf8"));
+    // New workspaces are already scaffolded with the official server.
+    expect(doc.mcpServers.twenty.url).toBe(
+      "${TWENTY_BASE_URL}/mcp?mode=direct",
+    );
+    doc.mcpServers.twenty = {
+      command: "npx",
+      args: ["-y", "twenty-crm-mcp-server"],
+    };
+    fs.writeFileSync(mcpFile, JSON.stringify(doc));
+    const reg = JSON.parse(fs.readFileSync(registryFile, "utf8"));
+    reg.migrations = (reg.migrations ?? []).filter(
+      (m: string) => m !== "twenty-official-mcp-v1",
+    );
+    fs.writeFileSync(registryFile, JSON.stringify(reg));
+    new WorkspaceManager();
+    const after = JSON.parse(fs.readFileSync(mcpFile, "utf8"));
+    expect(after.mcpServers.twenty).toMatchObject({ type: "http" });
+    expect(after.mcpServers.posthog).toEqual(doc.mcpServers.posthog);
+  });
+});
+
 describe("review checkpoints", () => {
   const doc = path.join(wsDir, "knowledge/clients/checkpoint-test.md");
 
