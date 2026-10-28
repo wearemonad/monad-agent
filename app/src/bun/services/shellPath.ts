@@ -6,9 +6,13 @@ import * as path from "node:path";
  *  (/usr/bin:/bin:/usr/sbin:/sbin), so user-installed tools — npx from
  *  Homebrew/nvm, uvx, docker — "vanish" even though they work fine in the
  *  terminal. Resolve the user's login-shell PATH once at startup and merge it
- *  into process.env.PATH, so Bun.which, the agent SDK and every spawned MCP
- *  server see the same world the terminal does. Dev runs launched from a
- *  terminal already have a full PATH; merging keeps their entries intact. */
+ *  into process.env.PATH. Dev runs launched from a terminal already have a
+ *  full PATH; merging keeps their entries intact.
+ *
+ *  Caveat: Bun snapshots the environment at launch. Bun.which, Bun.spawn and
+ *  child_process do NOT see later process.env.PATH writes unless they are
+ *  passed explicitly (`{ PATH: process.env.PATH }` / `env: process.env`) —
+ *  agent runs do this via their merged env. */
 export function fixProcessPath(): void {
   process.env.PATH = mergePaths(
     readLoginShellPath(),

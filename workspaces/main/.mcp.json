@@ -1,11 +1,10 @@
 {
   "mcpServers": {
     "twenty": {
-      "command": "npx",
-      "args": ["-y", "twenty-crm-mcp-server"],
-      "env": {
-        "TWENTY_API_KEY": "${TWENTY_API_KEY}",
-        "TWENTY_BASE_URL": "${TWENTY_BASE_URL}"
+      "type": "http",
+      "url": "${TWENTY_BASE_URL}/mcp?mode=direct",
+      "headers": {
+        "Authorization": "Bearer ${TWENTY_API_KEY}"
       }
     },
     "posthog": {

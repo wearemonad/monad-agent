@@ -1117,6 +1117,10 @@ async function listThreads(
 function runCodexLogin(bin: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, ["login"], {
+      // Explicit env: Bun children inherit the launch-time PATH, not the
+      // login-shell PATH merged into process.env — `#!/usr/bin/env node`
+      // would fail in a Finder-launched app.
+      env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";

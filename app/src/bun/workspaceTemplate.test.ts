@@ -47,7 +47,9 @@ describe("connector catalog", () => {
       expect(names.has(c.server.name)).toBe(false);
       names.add(c.server.name);
       expect(/^[a-zA-Z0-9_-]+$/.test(c.server.name)).toBe(true); // mcpAdd's name rule
-      if (c.server.kind === "http") expect(c.server.url).toMatch(/^https:\/\//);
+      // A per-instance server may start with its base-URL ${VAR}.
+      if (c.server.kind === "http")
+        expect(c.server.url).toMatch(/^(https:\/\/|\$\{[A-Z0-9_]+\}\/)/);
       else expect(c.server.command?.trim()).toBeTruthy();
       expect(c.docsUrl).toMatch(/^https:\/\//);
     }

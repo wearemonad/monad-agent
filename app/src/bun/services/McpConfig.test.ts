@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { McpConfig } from "./McpConfig";
+import { McpConfig, upgradeLegacyTwenty } from "./McpConfig";
 
 const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), "monad-mcp-test-"));
 const mcp = new McpConfig();
@@ -100,10 +100,10 @@ describe("McpConfig", () => {
     }
   });
 
-  // A server that 401s anonymous GETs (PostHog MCP) must be probed WITH its
-  // configured headers, ${VAR}s expanded from appEnv — otherwise a valid saved
-  // key still reports "check credentials".
-  test("test() sends configured headers with env expanded", async () => {
+  // The http test is a real MCP handshake sent WITH the configured headers,
+  // ${VAR}s expanded from appEnv. A plain GET can't tell a good key from a bad
+  // one — PostHog answers it with 405 either way.
+  test("test() handshakes with configured headers and reports bad keys", async () => {
     const headerWs = fs.mkdtempSync(path.join(os.tmpdir(), "monad-mcp-hdr-"));
     const realFetch = globalThis.fetch;
     try {
@@ -113,21 +113,129 @@ describe("McpConfig", () => {
         url: "https://mcp.posthog.com/mcp",
         bearerEnvVar: "POSTHOG_PERSONAL_API_KEY",
       });
-      const seen: { auth?: string } = {};
+      const seen: string[] = [];
       globalThis.fetch = (async (_url: any, init?: any) => {
-        seen.auth = init?.headers?.Authorization;
-        // PostHog: 401 without auth, 405 (method not allowed) with it.
-        return new Response(null, { status: seen.auth ? 405 : 401 });
+        const auth = new Headers(init?.headers).get("authorization");
+        if (auth) seen.push(auth);
+        if (auth !== "Bearer phx_real_key")
+          return new Response("Invalid API key", { status: 401 });
+        if (init?.method !== "POST") return new Response(null, { status: 405 });
+        const msg = JSON.parse(String(init.body));
+        if (msg.id === undefined) return new Response(null, { status: 202 });
+        const result =
+          msg.method === "initialize"
+            ? {
+                protocolVersion: msg.params.protocolVersion,
+                capabilities: { tools: {} },
+                serverInfo: { name: "PostHog", version: "1.0.0" },
+              }
+            : { tools: [{ name: "a", inputSchema: { type: "object" } }] };
+        return Response.json({ jsonrpc: "2.0", id: msg.id, result });
       }) as typeof fetch;
-      const res = await mcp.test(headerWs, "posthog", {
+
+      const good = await mcp.test(headerWs, "posthog", {
         POSTHOG_PERSONAL_API_KEY: "phx_real_key",
       });
-      expect(seen.auth).toBe("Bearer phx_real_key");
-      expect(res.ok).toBe(true);
-      expect(res.message).toContain("reachable");
+      expect(seen).toContain("Bearer phx_real_key");
+      expect(good).toEqual({
+        ok: true,
+        message: "Connected to PostHog — 1 tool.",
+      });
+
+      const bad = await mcp.test(headerWs, "posthog", {
+        POSTHOG_PERSONAL_API_KEY: "phx_wrong_key",
+      });
+      expect(bad.ok).toBe(false);
+      expect(bad.message).toContain("rejected the credentials (HTTP 401)");
     } finally {
       globalThis.fetch = realFetch;
       fs.rmSync(headerWs, { recursive: true, force: true });
+    }
+  });
+
+  // Bun.which ignores PATH entries merged into process.env after launch, so a
+  // GUI-launched app must hand it the merged PATH explicitly.
+  test("test() resolves stdio commands against the runtime PATH", async () => {
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "monad-mcp-bin-"));
+    const stdioWs = fs.mkdtempSync(path.join(os.tmpdir(), "monad-mcp-stdio-"));
+    const realPath = process.env.PATH;
+    try {
+      const bin = path.join(binDir, "monad-fake-npx");
+      fs.writeFileSync(bin, "#!/bin/sh\n", { mode: 0o755 });
+      mcp.add(stdioWs, {
+        name: "fake",
+        kind: "stdio",
+        command: "monad-fake-npx -y x",
+      });
+      process.env.PATH = `${binDir}:${realPath}`;
+      const res = await mcp.test(stdioWs, "fake");
+      expect(res).toEqual({ ok: true, message: `Command found at ${bin}.` });
+    } finally {
+      process.env.PATH = realPath;
+      fs.rmSync(binDir, { recursive: true, force: true });
+      fs.rmSync(stdioWs, { recursive: true, force: true });
+    }
+  });
+
+  test("http URL may start with a ${VAR} (per-instance servers)", () => {
+    const varWs = fs.mkdtempSync(path.join(os.tmpdir(), "monad-mcp-var-"));
+    try {
+      mcp.add(varWs, {
+        name: "twenty",
+        kind: "http",
+        url: "${TWENTY_BASE_URL}/mcp?mode=direct",
+        bearerEnvVar: "TWENTY_API_KEY",
+      });
+      const [info] = mcp.list(varWs, { TWENTY_API_KEY: "k" });
+      expect(info.detail).toBe("${TWENTY_BASE_URL}/mcp?mode=direct");
+      expect(info.missingEnv).toEqual(["TWENTY_BASE_URL"]);
+      expect(() =>
+        mcp.add(varWs, { name: "bad", kind: "http", url: "crm/mcp" }),
+      ).toThrow(/valid URL/);
+    } finally {
+      fs.rmSync(varWs, { recursive: true, force: true });
+    }
+  });
+
+  test("upgradeLegacyTwenty swaps the npx server for the official endpoint", () => {
+    const legacyWs = fs.mkdtempSync(path.join(os.tmpdir(), "monad-mcp-tw-"));
+    const file = path.join(legacyWs, ".mcp.json");
+    try {
+      const posthog = { type: "http", url: "https://mcp.posthog.com/mcp" };
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          mcpServers: {
+            twenty: {
+              command: "npx",
+              args: ["-y", "twenty-crm-mcp-server"],
+              env: { TWENTY_API_KEY: "${TWENTY_API_KEY}" },
+            },
+            posthog,
+          },
+        }),
+      );
+      expect(upgradeLegacyTwenty(legacyWs)).toBe(true);
+      const doc = JSON.parse(fs.readFileSync(file, "utf8"));
+      expect(doc.mcpServers.twenty).toEqual({
+        type: "http",
+        url: "${TWENTY_BASE_URL}/mcp?mode=direct",
+        headers: { Authorization: "Bearer ${TWENTY_API_KEY}" },
+      });
+      expect(doc.mcpServers.posthog).toEqual(posthog);
+      // Idempotent, and a hand-built twenty entry is left alone.
+      expect(upgradeLegacyTwenty(legacyWs)).toBe(false);
+      const custom = { command: "node", args: ["my-twenty.js"] };
+      fs.writeFileSync(
+        file,
+        JSON.stringify({ mcpServers: { twenty: custom } }),
+      );
+      expect(upgradeLegacyTwenty(legacyWs)).toBe(false);
+      expect(
+        JSON.parse(fs.readFileSync(file, "utf8")).mcpServers.twenty,
+      ).toEqual(custom);
+    } finally {
+      fs.rmSync(legacyWs, { recursive: true, force: true });
     }
   });
 

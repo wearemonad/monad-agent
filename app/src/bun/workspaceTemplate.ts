@@ -2,6 +2,7 @@
  *  repo — embedded here so the packaged app is self-contained. */
 
 import { workingMemoryTemplate } from "./services/workingMemory";
+import { TWENTY_MCP_URL } from "../shared/connectorCatalog";
 import { WORKING_MEMORY_PATH } from "../shared/memory";
 
 const CLAUDE_MD = `# Company Brain
@@ -55,11 +56,10 @@ This workspace is the persistent brain for the company. Every session here shoul
 const MCP_JSON = `{
   "mcpServers": {
     "twenty": {
-      "command": "npx",
-      "args": ["-y", "twenty-crm-mcp-server"],
-      "env": {
-        "TWENTY_API_KEY": "\${TWENTY_API_KEY}",
-        "TWENTY_BASE_URL": "\${TWENTY_BASE_URL}"
+      "type": "http",
+      "url": "${TWENTY_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer \${TWENTY_API_KEY}"
       }
     },
     "posthog": {

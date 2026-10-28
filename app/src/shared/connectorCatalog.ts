@@ -25,6 +25,15 @@ export type CatalogEntry = {
   };
 };
 
+/** Twenty's built-in MCP server (every instance serves it at /mcp). The URL
+ *  is per instance, so it is a ${VAR} like the API key — it shows up as a
+ *  credential row. `mode=direct` lists each operation as its own tool
+ *  (find_many_companies, update_one_opportunity, …) instead of routing
+ *  everything through one `execute_tool`, so permission prompts and
+ *  always-allow rules stay per operation. Claude defers the large tool list
+ *  via tool search. https://docs.twenty.com/developers/extend/mcp */
+export const TWENTY_MCP_URL = "${TWENTY_BASE_URL}/mcp?mode=direct";
+
 export const CONNECTOR_CATALOG: CatalogEntry[] = [
   {
     id: "linear",
@@ -54,14 +63,13 @@ export const CONNECTOR_CATALOG: CatalogEntry[] = [
     id: "twenty",
     name: "Twenty",
     description: "CRM — people, companies, notes, and pipeline.",
-    docsUrl: "https://twenty.com/developers",
-    note: "Local server; needs an API key (Twenty → Settings → APIs) and the base URL of your instance.",
+    docsUrl: "https://docs.twenty.com/developers/extend/mcp",
+    note: "Twenty's official MCP server. Set TWENTY_BASE_URL to your instance (e.g. https://acme.twenty.com) and TWENTY_API_KEY to a key from Settings → Developers → API.",
     server: {
       name: "twenty",
-      kind: "stdio",
-      command: "npx -y twenty-crm-mcp-server",
-      envLines:
-        "TWENTY_API_KEY=${TWENTY_API_KEY}\nTWENTY_BASE_URL=${TWENTY_BASE_URL}",
+      kind: "http",
+      url: TWENTY_MCP_URL,
+      bearerEnvVar: "TWENTY_API_KEY",
     },
   },
   {
