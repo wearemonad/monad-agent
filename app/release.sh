@@ -183,7 +183,10 @@ echo "▶ Build polls ${BAKED_URL} for updates"
 # The built-in Google client is a bundler `define` — if it didn't take, users
 # would land on "no built-in Google client". The tar stream is uncompressed, so
 # a plain byte search finds the baked id wherever the bundle put it.
-if ! zstd -dc "$TARBALL" 2>/dev/null | grep -qaF "$MONAD_GOOGLE_CLIENT_ID"; then
+# Not `grep -q`: it exits on the first match, zstd dies of SIGPIPE (141), and
+# pipefail turns that into a failed check even though the id is there. Plain
+# grep reads to the end, so zstd always finishes.
+if ! zstd -dc "$TARBALL" 2>/dev/null | grep -aF "$MONAD_GOOGLE_CLIENT_ID" >/dev/null; then
 	echo "✋ The built app has no built-in Google client baked in. Not publishing." >&2
 	echo "   Check MONAD_GOOGLE_CLIENT_ID and the define in electrobun.config.ts." >&2
 	exit 1
@@ -195,7 +198,7 @@ echo "▶ Build ships the built-in Google client"
 # only a Developer ID signed + notarized app (the launcher wrapper is what the
 # .dmg ships and what Gatekeeper sees).
 APP_BUNDLE="$(ls -d build/"${CHANNEL}"-macos-arm64/*.app 2>/dev/null | head -1)"
-if ! spctl -a -vv "$APP_BUNDLE" 2>&1 | grep -q "source=Notarized Developer ID"; then
+if ! spctl -a -vv "$APP_BUNDLE" 2>&1 | grep "source=Notarized Developer ID" >/dev/null; then
 	echo "✋ ${APP_BUNDLE:-the build} is not Developer ID signed + notarized — not publishing." >&2
 	echo "   Check the ELECTROBUN_* signing/notarization creds in app/.env." >&2
 	exit 1
