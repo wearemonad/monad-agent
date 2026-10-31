@@ -1,6 +1,6 @@
 {
   "name": "monad",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Monad — chat UI over the company brain (Claude Agent SDK + Electrobun)",
   "scripts": {
     "start": "vite build && electrobun dev",
