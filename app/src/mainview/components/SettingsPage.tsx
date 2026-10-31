@@ -18,6 +18,7 @@ import {
   Folder,
   FolderPlus,
   Folders,
+  ImageIcon,
   LifeBuoy,
   MoreHorizontal,
   Palette,
@@ -101,6 +102,7 @@ import {
   type ToolOption,
 } from "../../shared/toolCatalog";
 import { ToolPicker } from "./ToolPicker";
+import { IMAGE_SOURCE_LABELS, type ImageProviderId } from "../../shared/images";
 import { UpdateControls } from "./UpdateControls";
 import { Button } from "@/components/ui/button";
 import {
@@ -164,6 +166,7 @@ const SECTIONS = [
   { id: "skills", label: "Skills", icon: Sparkles },
   { id: "connectors", label: "Connectors", icon: Plug },
   { id: "providers", label: "Providers", icon: Bot },
+  { id: "images", label: "Image models", icon: ImageIcon },
   { id: "google", label: "Google", icon: Cloud },
   { id: "troubleshooting", label: "Troubleshooting", icon: LifeBuoy },
 ] as const;
@@ -288,6 +291,7 @@ export function SettingsPage() {
           {section === "skills" && <SkillsSection />}
           {section === "connectors" && <ConnectorsSection />}
           {section === "providers" && <ProvidersSection />}
+          {section === "images" && <ImageModelsSection />}
           {section === "google" && <GoogleClientSection />}
           {section === "troubleshooting" && <TroubleshootingSection />}
         </div>
@@ -3057,6 +3061,213 @@ function ApiKeyField({
         )}
       </FieldDescription>
     </Field>
+  );
+}
+
+/** Where each image provider's key comes from, and what it's good at. */
+const IMAGE_PROVIDER_META: Record<
+  ImageProviderId,
+  { blurb: string; keyUrl: string; placeholder: string }
+> = {
+  openai: {
+    blurb:
+      "gpt-image through the OpenAI API, billed per image to your API account.",
+    keyUrl: "https://platform.openai.com/api-keys",
+    placeholder: "sk-…",
+  },
+  gemini: {
+    blurb: "Google's Nano Banana image models through the Gemini API.",
+    keyUrl: "https://aistudio.google.com/apikey",
+    placeholder: "AIza…",
+  },
+  fal: {
+    blurb:
+      "One key for many models — Flux, Recraft, Ideogram… Set any fal model id.",
+    keyUrl: "https://fal.ai/dashboard/keys",
+    placeholder: "fal key",
+  },
+  openrouter: {
+    blurb: "Image-capable models from several labs behind one OpenRouter key.",
+    keyUrl: "https://openrouter.ai/settings/keys",
+    placeholder: "sk-or-…",
+  },
+};
+
+/** Settings → Image models: the keys that route generate_image away from the
+ *  Codex fallback, and which one answers when there are several. */
+function ImageModelsSection() {
+  const settings = useStore((s) => s.settings);
+  if (!settings) return null;
+  const { images } = settings;
+  const keyed = images.providers.filter((p) => p.hasKey);
+
+  return (
+    <section>
+      <SectionHeader title="Image models">
+        The agent can create images in any chat — including with Claude models,
+        which can't make images themselves. With no key here, images come from
+        gpt-image through your Codex CLI and ChatGPT sign-in, and count toward
+        your Codex usage limits. Add a key to use that provider instead.
+      </SectionHeader>
+
+      <div className="rounded-xl border border-border p-4 mb-8">
+        <div className="text-sm">
+          Next image:{" "}
+          <span className="font-medium">
+            {IMAGE_SOURCE_LABELS[images.active]}
+          </span>
+          {images.active !== "codex" && (
+            <span className="text-muted-foreground">
+              {" "}
+              ·{" "}
+              {images.providers.find((p) => p.id === images.active)?.model ||
+                images.providers.find((p) => p.id === images.active)
+                  ?.defaultModel}
+            </span>
+          )}
+        </div>
+        {images.active === "codex" && (
+          <p className="text-xs text-muted-foreground mt-1">
+            {settings.resolvedCodexPath ? (
+              <>
+                Codex CLI found at{" "}
+                <span className="font-mono">{settings.resolvedCodexPath}</span>.
+                Sign-in is managed in Settings → Providers → OpenAI.
+              </>
+            ) : (
+              <>
+                <AlertTriangle
+                  size={11}
+                  className="inline -mt-px text-warning"
+                />{" "}
+                Codex CLI not found. Install it with{" "}
+                <span className="font-mono">npm i -g @openai/codex</span> and
+                run <span className="font-mono">codex login</span>, or add a key
+                below.
+              </>
+            )}
+          </p>
+        )}
+        {keyed.length > 1 && (
+          <Field className="mt-4">
+            <FieldLabel>Default image model</FieldLabel>
+            <RadioGroup
+              value={images.defaultProvider ?? keyed[0]!.id}
+              onValueChange={(v) =>
+                void api.updateSettings({
+                  imageDefaultProvider: v as ImageProviderId,
+                })
+              }
+            >
+              {keyed.map((p) => (
+                <div key={p.id} className="flex items-center gap-2">
+                  <RadioGroupItem value={p.id} id={`image-default-${p.id}`} />
+                  <Label
+                    htmlFor={`image-default-${p.id}`}
+                    className="text-sm font-normal"
+                  >
+                    {IMAGE_SOURCE_LABELS[p.id]}
+                  </Label>
+                </div>
+              ))}
+            </RadioGroup>
+          </Field>
+        )}
+      </div>
+
+      <div className="space-y-4">
+        {images.providers.map((p) => (
+          <ImageProviderCard key={p.id} provider={p} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ImageProviderCard({
+  provider,
+}: {
+  provider: SettingsView["images"]["providers"][number];
+}) {
+  const meta = IMAGE_PROVIDER_META[provider.id];
+  const [model, setModel] = useState<string | null>(null);
+  const value = model ?? provider.model;
+
+  return (
+    <div className="rounded-xl border border-border p-4 space-y-4">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            {IMAGE_SOURCE_LABELS[provider.id]}
+            {provider.hasKey && <Badge variant="secondary">Connected</Badge>}
+          </h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {meta.blurb}{" "}
+            <button
+              type="button"
+              className="underline underline-offset-2 hover:text-foreground"
+              onClick={() => void api.openUrl(meta.keyUrl)}
+            >
+              Get a key
+            </button>
+          </p>
+        </div>
+        {provider.hasKey && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              void api.updateSettings({ imageApiKeys: { [provider.id]: null } })
+            }
+          >
+            <Trash2 size={13} /> Remove key
+          </Button>
+        )}
+      </div>
+      <ApiKeyField
+        id={`image-key-${provider.id}`}
+        label="API key"
+        placeholder={meta.placeholder}
+        hasKey={provider.hasKey}
+        onSave={(key) =>
+          api.updateSettings({ imageApiKeys: { [provider.id]: key } })
+        }
+      />
+      <Field>
+        <FieldLabel htmlFor={`image-model-${provider.id}`}>Model</FieldLabel>
+        <div className="flex gap-2">
+          <Input
+            id={`image-model-${provider.id}`}
+            className="flex-1 h-8 text-xs font-mono"
+            placeholder={provider.defaultModel}
+            value={value}
+            onChange={(e) => setModel(e.target.value)}
+            onKeyDown={onEnter(() => {
+              void api.updateSettings({
+                imageModels: { [provider.id]: value },
+              });
+              setModel(null);
+            })}
+          />
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={model === null || model === provider.model}
+            onClick={() => {
+              void api.updateSettings({
+                imageModels: { [provider.id]: value },
+              });
+              setModel(null);
+            }}
+          >
+            Save
+          </Button>
+        </div>
+        <FieldDescription className="text-[0.6875rem]">
+          Leave empty for {provider.defaultModel}.
+        </FieldDescription>
+      </Field>
+    </div>
   );
 }
 

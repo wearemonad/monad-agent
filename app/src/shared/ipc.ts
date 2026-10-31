@@ -1,6 +1,7 @@
 // Shared contract between the bun main process and the webview.
 // The webview never sees raw SDK message types — only these.
 
+import type { ImageProviderId, ImageSource } from "./images";
 import type { GraphBackfillStatus, KnowledgeGraphView } from "./knowledgeGraph";
 
 export type AgentStreamEvent =
@@ -506,6 +507,23 @@ export type SettingsView = {
   hasGoogleClientSecret: boolean;
   /** App ships a built-in Google client — users just click Connect. */
   googleClientBuiltIn: boolean;
+  /** Settings → Image models. */
+  images: ImageSettingsView;
+};
+
+/** Settings → Image models: which providers have a key (never the key
+ *  itself), the chosen default, and who answers the next image request. */
+export type ImageSettingsView = {
+  providers: {
+    id: ImageProviderId;
+    hasKey: boolean;
+    /** Override, or "" for the provider's default model. */
+    model: string;
+    defaultModel: string;
+  }[];
+  defaultProvider: ImageProviderId | null;
+  /** Who generates the next image: a keyed provider, or Codex. */
+  active: ImageSource;
 };
 
 // Rendered message model — used for both live chat and loaded history.
@@ -712,6 +730,10 @@ export type MonadRPC = {
           apiKey?: string; // write-only
           openaiApiKey?: string; // write-only
           googleClientSecret?: string; // write-only
+          /** Write-only; "" or null removes a key. */
+          imageApiKeys?: Partial<Record<ImageProviderId, string | null>>;
+          imageDefaultProvider?: ImageProviderId | null;
+          imageModels?: Partial<Record<ImageProviderId, string | null>>;
         };
         response: SettingsView;
       };

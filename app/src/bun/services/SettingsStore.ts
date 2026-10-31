@@ -6,7 +6,9 @@ import {
   type AuthMode,
   type ProviderId,
 } from "../../shared/ipc";
+import { IMAGE_PROVIDER_IDS, type ImageProviderId } from "../../shared/images";
 import { GOOGLE_CLIENT_DEFAULTS } from "../googleClientDefaults";
+import type { ImageSettings } from "./images/ImageGeneration";
 import { Keychain, KeychainServices } from "./Keychain";
 import { readJsonAtomic, writeJsonAtomic } from "./atomicJson";
 
@@ -21,6 +23,10 @@ type SettingsFile = {
   /** Default Ollama model for local-mode runs (an Ollama tag). */
   localModel?: string;
   googleClientId?: string;
+  /** Settings → Image models: the provider used when several have a key. */
+  imageDefaultProvider?: ImageProviderId;
+  /** Per-provider image model override (DEFAULT_IMAGE_MODELS otherwise). */
+  imageModels?: Partial<Record<ImageProviderId, string>>;
 };
 
 const CONFIG_DIR = path.join(os.homedir(), "Library/Application Support/Monad");
@@ -101,6 +107,23 @@ export class SettingsStore {
     return !!this.getOpenAIApiKey();
   }
 
+  getImageApiKey(id: ImageProviderId): string | null {
+    return Keychain.get(KeychainServices.imageApiKey(id));
+  }
+
+  /** Everything image routing needs, read fresh (keys from the Keychain). */
+  imageSettings(): ImageSettings {
+    const keys: ImageSettings["keys"] = {};
+    for (const id of IMAGE_PROVIDER_IDS) keys[id] = this.getImageApiKey(id);
+    return {
+      ...(this.data.imageDefaultProvider
+        ? { defaultProvider: this.data.imageDefaultProvider }
+        : {}),
+      keys,
+      models: { ...this.data.imageModels },
+    };
+  }
+
   update(patch: {
     authMode?: AuthMode;
     enabledProviders?: ProviderId[];
@@ -111,6 +134,11 @@ export class SettingsStore {
     apiKey?: string; // write-only
     openaiApiKey?: string; // write-only
     googleClientSecret?: string; // write-only
+    /** Write-only; "" or null removes the key. */
+    imageApiKeys?: Partial<Record<ImageProviderId, string | null>>;
+    imageDefaultProvider?: ImageProviderId | null;
+    /** "" or null resets a provider to its default model. */
+    imageModels?: Partial<Record<ImageProviderId, string | null>>;
   }): void {
     // Keychain writes FIRST: a denied/locked keychain prompt throws, and it
     // must do so before any in-memory mutation — otherwise the unrelated
@@ -125,6 +153,36 @@ export class SettingsStore {
         KeychainServices.googleClientSecret,
         patch.googleClientSecret,
       );
+    }
+    const imageKeys = Object.entries(patch.imageApiKeys ?? {}).filter(([id]) =>
+      IMAGE_PROVIDER_IDS.includes(id as ImageProviderId),
+    ) as [ImageProviderId, string | null][];
+    for (const [id, key] of imageKeys) {
+      if (key?.trim())
+        Keychain.set(KeychainServices.imageApiKey(id), key.trim());
+      else Keychain.delete(KeychainServices.imageApiKey(id));
+    }
+    // The first key added becomes the default image model; removing the
+    // default's key hands the role to another provider that has one.
+    for (const [id, key] of imageKeys) {
+      if (key?.trim()) this.data.imageDefaultProvider ??= id;
+      else if (this.data.imageDefaultProvider === id) {
+        this.data.imageDefaultProvider = IMAGE_PROVIDER_IDS.find(
+          (p) => p !== id && !!this.getImageApiKey(p),
+        );
+      }
+    }
+    if (patch.imageDefaultProvider !== undefined) {
+      const next = patch.imageDefaultProvider;
+      this.data.imageDefaultProvider =
+        next && IMAGE_PROVIDER_IDS.includes(next) ? next : undefined;
+    }
+    for (const [id, model] of Object.entries(patch.imageModels ?? {})) {
+      if (!IMAGE_PROVIDER_IDS.includes(id as ImageProviderId)) continue;
+      const models = { ...this.data.imageModels };
+      if (model?.trim()) models[id as ImageProviderId] = model.trim();
+      else delete models[id as ImageProviderId];
+      this.data.imageModels = models;
     }
     // Only Claude-runtime providers can be the default (see AuthMode).
     const authMode =

@@ -12,6 +12,7 @@ Everything stays on your Mac. The brain is a plain folder of Markdown files, so 
 - **Ingest** — drag files into the app (or sync a Google Drive folder) and the agent turns them into structured, linked Markdown under `knowledge/`, with an `INDEX.md` catalog. Changes wait in a review queue before they land.
 - **Memory & search** — a local hybrid index (SQLite FTS5 + on-device embeddings) with cited results, a small working memory injected into every run, and a derived knowledge graph of people, companies and projects.
 - **Artifacts** — HTML, SVG, Mermaid and Markdown documents rendered in a sandboxed side panel, with version history.
+- **Image generation** — the agent can create images that show up right in the chat, even when you chat with Claude (which can't make images itself). See [Image generation](#image-generation).
 - **Google** — per-workspace Gmail (search, read, drafts — the agent can never send), Calendar, and Drive folder sync.
 - **Connectors** — any MCP server, configured per workspace from Settings (Twenty CRM and PostHog are pre-wired in the template).
 - **Scheduled jobs** — morning briefings and recurring reports that run in the background with tighter permissions than interactive chats.
@@ -31,7 +32,7 @@ Then, in Monad Agent:
 
 ## Build from source
 
-Requirements: macOS 14+ on Apple Silicon, [Bun](https://bun.sh) 1.3+, Xcode Command Line Tools, and [Claude Code](https://claude.com/claude-code) installed and logged in (or an Anthropic API key).
+Requirements: macOS 14+ on Apple Silicon, [Bun](https://bun.sh) 1.3+, Xcode Command Line Tools, and [Claude Code](https://claude.com/claude-code) installed and logged in (or an Anthropic API key). For image generation without an image API key, also install the [Codex CLI](https://github.com/openai/codex) (`npm i -g @openai/codex`) and run `codex login`.
 
 ```sh
 git clone https://github.com/wearemonad/monad-agent.git
@@ -64,6 +65,14 @@ Monad Agent never proxies anyone's account through a server. Each person authent
 - **OpenAI (Codex)** — OpenAI models through the Codex SDK, with your own Codex login.
 
 Never share one subscription across people or put Monad Agent behind a server.
+
+## Image generation
+
+Ask for a picture in any chat and the agent generates it through its `generate_image` tool. The image appears inline, where you can open or save it.
+
+- **Default: gpt-image through Codex.** With no image API key set, Monad Agent uses the **Codex CLI installed on your machine** and your ChatGPT sign-in. Install it with `npm i -g @openai/codex`, then run `codex login`. Images count toward your ChatGPT plan's Codex usage limits.
+- **Your own API key.** In **Settings → Image models**, add a key for OpenAI (gpt-image), Google Gemini (Nano Banana), fal.ai or OpenRouter. Once a key is set, that provider is used instead of Codex. With several keys, pick the default there, and optionally change each provider's model. Keys are stored in the macOS Keychain.
+- **When it can't.** If the plan's usage limit is reached, the Codex sign-in has expired, the CLI isn't installed, a key is rejected, credits run out, or a safety filter declines the prompt, the agent tells you which one happened and how to fix it.
 
 ## Workspaces
 

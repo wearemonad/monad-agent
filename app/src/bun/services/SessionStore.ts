@@ -20,6 +20,7 @@ import {
 } from "../../shared/artifacts";
 import { readArtifact } from "./artifactTools";
 import { DRAFT_EMAIL_TOOL, parseEmailDraftInput } from "../../shared/email";
+import { GENERATE_IMAGE_TOOL, parseImageToolResult } from "../../shared/images";
 import {
   forgetSessionKind,
   forgetSessionOwner,
@@ -366,6 +367,8 @@ export class SessionStore {
       // separate session) falls back to the current on-disk content.
       const contentById = new Map<string, string>();
       const kindById = new Map<string, { type: ArtifactType; title: string }>();
+      // Successful generate_image calls: their images arrive in the result.
+      const imageToolUses = new Set<string>();
       for (const msg of messages as any[]) {
         const m = msg.message ?? msg;
         const role = m?.role ?? msg.type;
@@ -411,6 +414,13 @@ export class SessionStore {
               }
             }
             if (
+              block.name === GENERATE_IMAGE_TOOL &&
+              !erroredToolUse.has(block.id)
+            ) {
+              imageToolUses.add(block.id);
+              continue;
+            }
+            if (
               block.name === DRAFT_EMAIL_TOOL &&
               !erroredToolUse.has(block.id)
             ) {
@@ -428,6 +438,12 @@ export class SessionStore {
               pending: false,
             });
           } else if (block.type === "tool_result") {
+            if (imageToolUses.has(block.tool_use_id)) {
+              for (const img of parseImageToolResult(block.content)) {
+                items.push({ type: "image", ...img });
+              }
+              continue;
+            }
             const prior = items.find(
               (i) => i.type === "tool" && i.toolUseId === block.tool_use_id,
             );
