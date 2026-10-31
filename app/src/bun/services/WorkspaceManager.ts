@@ -29,6 +29,7 @@ import { WORKING_MEMORY_PATH } from "../../shared/memory";
 import { workingMemoryTemplate } from "./workingMemory";
 import { ARTIFACTS_ALLOW_RULE } from "../../shared/artifacts";
 import { EMAIL_ALLOW_RULE } from "../../shared/email";
+import { IMAGES_ALLOW_RULE } from "../../shared/images";
 import { MEMORY_ALLOW_RULE } from "../../shared/memory";
 import { readJsonAtomic, writeJsonAtomic } from "./atomicJson";
 import { localDateKey } from "./SchedulerService";
@@ -73,7 +74,8 @@ type Entry = {
 
 /** Tools that are safe to auto-approve in any workspace: read-only tools, the
  *  artifact tools (which only write inside the workspace's artifacts/), and
- *  the email card tool (pure presentation — sending is a human click). */
+ *  the email card tool (pure presentation — sending is a human click), and
+ *  generate_image (only makes a picture, shown in the chat). */
 const DEFAULT_ALWAYS_ALLOW = [
   "Read",
   "Glob",
@@ -82,6 +84,7 @@ const DEFAULT_ALWAYS_ALLOW = [
   ARTIFACTS_ALLOW_RULE,
   EMAIL_ALLOW_RULE,
   MEMORY_ALLOW_RULE,
+  IMAGES_ALLOW_RULE,
 ];
 
 type Registry = {
@@ -141,6 +144,7 @@ export class WorkspaceManager {
     this.registry = this.load();
     this.migrateArtifacts();
     this.migrateEmailCard();
+    this.migrateImageGeneration();
     this.migrateMemoryTools();
     this.migrateWorkingMemory();
     this.migrateKnowledgeGraph();
@@ -1380,6 +1384,20 @@ export class WorkspaceManager {
     for (const w of this.registry.workspaces) {
       if (w.alwaysAllow && !w.alwaysAllow.includes(MEMORY_ALLOW_RULE)) {
         w.alwaysAllow.push(MEMORY_ALLOW_RULE);
+      }
+    }
+    this.registry.migrations = [...(this.registry.migrations ?? []), FLAG];
+    this.save();
+  }
+
+  /** One-time roll-out of the generate_image auto-allow rule (same gating
+   *  as migrateEmailCard). */
+  private migrateImageGeneration(): void {
+    const FLAG = "image-generation-v1";
+    if (this.registry.migrations?.includes(FLAG)) return;
+    for (const w of this.registry.workspaces) {
+      if (w.alwaysAllow && !w.alwaysAllow.includes(IMAGES_ALLOW_RULE)) {
+        w.alwaysAllow.push(IMAGES_ALLOW_RULE);
       }
     }
     this.registry.migrations = [...(this.registry.migrations ?? []), FLAG];

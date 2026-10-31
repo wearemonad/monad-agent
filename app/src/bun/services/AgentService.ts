@@ -25,6 +25,7 @@ import { forgetSessionOwner, recordSessionOwner } from "./sessionMeta";
 import { artifactOpFromToolName } from "../../shared/artifacts";
 import { readArtifact } from "./artifactTools";
 import { DRAFT_EMAIL_TOOL, parseEmailDraftInput } from "../../shared/email";
+import { GENERATE_IMAGE_TOOL, parseImageToolResult } from "../../shared/images";
 import type { EmailDraftData } from "../../shared/ipc";
 import {
   backgroundPolicyHint,
@@ -285,6 +286,11 @@ export class AgentService {
   private pendingEmails = new Map<
     string,
     { runId: string; draft: EmailDraftData; name: string; inputSummary: string }
+  >();
+  /** And for generate_image → the images, shown inline in the chat. */
+  private pendingImages = new Map<
+    string,
+    { runId: string; name: string; inputSummary: string }
   >();
   /** One API turn streams several assistant messages sharing a message.id,
    *  each carrying the same usage totals — remember the last id per run so a
@@ -851,6 +857,9 @@ export class AgentService {
     }
     for (const [id, p] of this.pendingEmails) {
       if (s.runIds.has(p.runId)) this.pendingEmails.delete(id);
+    }
+    for (const [id, p] of this.pendingImages) {
+      if (s.runIds.has(p.runId)) this.pendingImages.delete(id);
     }
     // A message-less session file (reaped prewarm fork, or a run killed
     // before its first write) is deleted, never surfaced as a thread.
@@ -1452,6 +1461,9 @@ export class AgentService {
       for (const [id, p] of this.pendingEmails) {
         if (p.runId === runId) this.pendingEmails.delete(id);
       }
+      for (const [id, p] of this.pendingImages) {
+        if (p.runId === runId) this.pendingImages.delete(id);
+      }
       // A message-less session (run died before its first write) is deleted
       // rather than surfaced as an empty thread.
       if (
@@ -1599,6 +1611,14 @@ export class AgentService {
               });
               continue;
             }
+            if (block.name === GENERATE_IMAGE_TOOL) {
+              this.pendingImages.set(block.id, {
+                runId,
+                name: block.name,
+                inputSummary: summarize(block.name, block.input),
+              });
+              continue;
+            }
             if (block.name === DRAFT_EMAIL_TOOL) {
               const draft = parseEmailDraftInput(block.input);
               if (draft) {
@@ -1629,6 +1649,27 @@ export class AgentService {
           ? []
           : (content ?? [])) {
           if (block.type === "tool_result") {
+            const pendingImage = this.pendingImages.get(block.tool_use_id);
+            if (pendingImage) {
+              this.pendingImages.delete(block.tool_use_id);
+              const images = block.is_error
+                ? []
+                : parseImageToolResult(block.content);
+              if (images.length > 0) {
+                for (const img of images) {
+                  this.emit({ kind: "image", runId, ...img });
+                }
+                continue;
+              }
+              // Failed: the tool row (with the failure message) stays visible.
+              this.emit({
+                kind: "tool-call",
+                runId,
+                toolUseId: block.tool_use_id,
+                name: pendingImage.name,
+                inputSummary: pendingImage.inputSummary,
+              });
+            }
             const pendingEmail = this.pendingEmails.get(block.tool_use_id);
             if (pendingEmail) {
               this.pendingEmails.delete(block.tool_use_id);

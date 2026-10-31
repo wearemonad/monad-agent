@@ -54,6 +54,33 @@ import {
 import { ARTIFACTS_SERVER } from "../shared/artifacts";
 import { buildEmailToolsServer } from "./services/emailTools";
 import {
+  CHAT_IMAGE_TYPES,
+  monadImagesDir,
+  servableImagePath,
+} from "./services/chatImages";
+import {
+  buildImageToolsServer,
+  type GenerateImage,
+} from "./services/imageTools";
+import {
+  codexImageProvider,
+  sdkCodexTurn,
+} from "./services/images/codexProvider";
+import { makeHttpImageProvider } from "./services/images/httpProviders";
+import {
+  chooseImageSource,
+  ImageGeneration,
+} from "./services/images/ImageGeneration";
+import {
+  ImageProviderError,
+  imageFailureMessage,
+} from "./services/images/ImageFailure";
+import {
+  DEFAULT_IMAGE_MODELS,
+  IMAGE_PROVIDER_IDS,
+  IMAGES_SERVER,
+} from "../shared/images";
+import {
   EMAIL_SERVER,
   assertHeaderSafe,
   sanitizeAddressList,
@@ -326,10 +353,63 @@ const appRuntime = makeAppRuntime(
     AgentSessions.layer,
     GoogleOperations.layer,
     GoogleOAuth.layer,
+    ImageGeneration.layer({
+      settings: () => settings.imageSettings(),
+      makeProvider: (id, o) =>
+        makeHttpImageProvider(id, { ...o, outDir: monadImagesDir() }),
+      // No image key set: gpt-image through the user's own Codex CLI and
+      // ChatGPT login.
+      codex: codexImageProvider({
+        home: codexHome(),
+        cli: codexCli,
+        runTurn: sdkCodexTurn({
+          auth: openaiSubscriptionAuth,
+          workingDirectory: () => {
+            const dir = path.join(os.tmpdir(), "monad-codex-images");
+            fs.mkdirSync(dir, { recursive: true });
+            return dir;
+          },
+        }),
+      }),
+    }),
     backgroundLoops(backgroundLoopSpecs()),
   ),
 );
 const backgroundRuns = appRuntime.runSync(Effect.service(BackgroundRuns));
+const imageGeneration = appRuntime.runSync(Effect.service(ImageGeneration));
+
+/** generate_image's backend: one request through ImageGeneration, settled
+ *  into images or the sentence the user should read. Bounded, so a wedged
+ *  provider can't hold the agent's turn forever. */
+const generateImage: GenerateImage = (req) =>
+  appRuntime.runPromise(
+    imageGeneration.generate(req).pipe(
+      Effect.timeoutOrElse({
+        duration: "4 minutes",
+        orElse: () => {
+          const choice = chooseImageSource(settings.imageSettings());
+          return Effect.fail(
+            new ImageProviderError({
+              provider: choice === "codex" ? "codex" : choice.id,
+              detail: "No image after 4 minutes — the request timed out.",
+              transient: false,
+            }),
+          );
+        },
+      }),
+      Effect.tap((r) =>
+        Effect.logInfo(`[images] ${r.images.length} image(s) via ${r.source}`),
+      ),
+      Effect.map((r) => ({ ok: true as const, ...r })),
+      Effect.catch((f) =>
+        Effect.logWarning(
+          `[images] ${f._tag} via ${f.provider}: ${f.detail.slice(0, 200)}`,
+        ).pipe(
+          Effect.as({ ok: false as const, message: imageFailureMessage(f) }),
+        ),
+      ),
+    ),
+  );
 
 const drive = new GoogleDriveService(
   settings,
@@ -423,6 +503,7 @@ function buildMcpServers(
   // artifacts/), the inline email-draft card, and long-term memory recall.
   servers[ARTIFACTS_SERVER] = buildArtifactToolsServer(workspacePath);
   servers[EMAIL_SERVER] = buildEmailToolsServer();
+  servers[IMAGES_SERVER] = buildImageToolsServer(generateImage);
   servers[MEMORY_SERVER] = buildMemoryToolsServer(workspacePath, {
     index: memoryIndex,
     sync: () => syncMemory(workspaceId, workspacePath),
@@ -1068,34 +1149,17 @@ function briefingPrompts(ws: Pick<WorkspaceInfo, "jobs">): string[] {
   return ws.jobs.filter((j) => jobKind(j) === "briefing").map((j) => j.prompt);
 }
 
-/** Image types the composer previews as thumbnails, by extension → MIME
- *  type (the data URL needs it). Every other file attaches with a file icon. */
-const CHAT_IMAGE_TYPES: Record<string, string> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-};
 /** Thumbnails are inlined as data URLs — keep big images to a file chip. */
 const MAX_CHAT_PREVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_CHAT_FILE_BYTES = 50 * 1024 * 1024;
 
-/** The real path of a generated image the webview asked for, or null. The
- *  path comes from the webview, so it must resolve (symlinks included) to an
- *  image in a thread folder of Codex's generated_images — never an
- *  arbitrary file read. */
+/** The real path of a generated image the webview asked for, or null:
+ *  Codex's generated_images or Monad's own (API-key image providers). */
 function generatedImagePath(file: string): string | null {
-  let real: string;
-  let root: string;
-  try {
-    real = fs.realpathSync(file);
-    root = fs.realpathSync(path.join(codexHome(), "generated_images"));
-  } catch {
-    return null;
-  }
-  if (!CHAT_IMAGE_TYPES[path.extname(real).slice(1).toLowerCase()]) return null;
-  return path.dirname(path.dirname(real)) === root ? real : null;
+  return servableImagePath(file, [
+    path.join(codexHome(), "generated_images"),
+    monadImagesDir(),
+  ]);
 }
 
 /** A workspace's sidebar threads: Claude sessions and OpenAI (Codex)
@@ -2884,6 +2948,22 @@ function settingsView() {
     googleClientId: settings.googleClientId ?? "",
     hasGoogleClientSecret: !!settings.getGoogleClientSecret(),
     googleClientBuiltIn: settings.hasBuiltInGoogleClient(),
+    images: imageSettingsView(),
+  };
+}
+
+function imageSettingsView() {
+  const s = settings.imageSettings();
+  const choice = chooseImageSource(s);
+  return {
+    providers: IMAGE_PROVIDER_IDS.map((id) => ({
+      id,
+      hasKey: !!s.keys[id],
+      model: s.models[id] ?? "",
+      defaultModel: DEFAULT_IMAGE_MODELS[id],
+    })),
+    defaultProvider: s.defaultProvider ?? null,
+    active: choice === "codex" ? ("codex" as const) : choice.id,
   };
 }
 

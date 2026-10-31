@@ -9,10 +9,11 @@
 
 import { ARTIFACTS_ALLOW_RULE } from "./artifacts";
 import { EMAIL_ALLOW_RULE } from "./email";
+import { IMAGES_ALLOW_RULE } from "./images";
 import { MEMORY_ALLOW_RULE } from "./memory";
 
 /** App-internal plumbing rules (artifact panel, email draft card, working
- *  memory) seeded into every workspace's alwaysAllow. Not a user-facing
+ *  memory, image generation) seeded into every workspace's alwaysAllow. Not a user-facing
  *  permission decision: revoking one only adds prompts in chat and silently
  *  breaks background runs, where a tool that can't ask is denied — so
  *  permission UIs hide these rather than offer a toggle. */
@@ -20,6 +21,7 @@ export const INTERNAL_ALLOW_RULES = new Set<string>([
   ARTIFACTS_ALLOW_RULE,
   EMAIL_ALLOW_RULE,
   MEMORY_ALLOW_RULE,
+  IMAGES_ALLOW_RULE,
 ]);
 
 export type ToolGroup =

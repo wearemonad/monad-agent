@@ -97,4 +97,6 @@ export const KeychainServices = {
   openaiApiKey: "monad-openai-api-key",
   googleClientSecret: "monad-google-client-secret",
   driveRefreshToken: (workspaceId: string) => `monad-drive-${workspaceId}`,
+  /** Settings → Image models, one key per provider. */
+  imageApiKey: (provider: string) => `monad-image-${provider}-api-key`,
 };
