@@ -7,7 +7,7 @@
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.287",
         "@base-ui/react": "^1.8.0",
-        "@flowershow/remark-wiki-link": "3.4.0",
+        "@flowershow/remark-wiki-link": "4.0.1",
         "@googleapis/calendar": "^20.0.1",
         "@googleapis/drive": "^26.0.1",
         "@googleapis/gmail": "^22.0.1",
@@ -243,7 +243,9 @@
 
     "@floating-ui/utils": ["@floating-ui/utils@0.2.12", "", {}, "sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww=="],
 
-    "@flowershow/remark-wiki-link": ["@flowershow/remark-wiki-link@3.4.0", "", { "dependencies": { "github-slugger": "^2.0.0", "mdast-util-to-markdown": "^2.1.2", "micromark-util-character": "^2.0.0", "micromark-util-symbol": "^2.0.1" } }, "sha512-YeeIwZ630CgBRiVWwM5C8ikAyuT0nLjdjhAZxhOOBgUCA34LCQxFwCkEnA0BySDJr6NQiJjJfRvO/TxBs+deAA=="],
+    "@flowershow/core": ["@flowershow/core@1.0.0", "", {}, "sha512-tHvtaVF6UTqQPcPtKjRlr9QHuCxEC/TG5d0Sjj+wLlBGwYlVX1VSgSyCFgJBmBHSz2/v7Jm7exTGyo7MpfEXqw=="],
+
+    "@flowershow/remark-wiki-link": ["@flowershow/remark-wiki-link@4.0.1", "", { "dependencies": { "@flowershow/core": "1.0.0", "github-slugger": "^2.0.0", "mdast-util-to-markdown": "^2.1.2", "micromark-util-character": "^2.0.0", "micromark-util-symbol": "^2.0.1" } }, "sha512-LMR+mlgQrfsHsFPFtaCRNaiILGpflkUovS2S//7tGtueA59M3IBaiTKeIGOwCIxOXAbFAo1zc8QmtrNF1eoOFg=="],
 
     "@googleapis/calendar": ["@googleapis/calendar@20.0.1", "", { "dependencies": { "googleapis-common": "^9.0.0" } }, "sha512-NclDdcEoPvPBCHwUtcQj9rqWelAVl/nRj98WLUrNM2ByvqXjjUP0Ux/0nVb/FH9hoLR+dw9f0zHDOu2Di8oqrg=="],
 
