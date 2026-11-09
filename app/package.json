@@ -18,7 +18,7 @@
     "@base-ui/react": "^1.8.0",
     "@flowershow/remark-wiki-link": "3.4.0",
     "@googleapis/calendar": "^20.0.1",
-    "@googleapis/drive": "^26.0.1",
+    "@googleapis/drive": "^27.0.0",
     "@googleapis/gmail": "^22.0.1",
     "@hookform/resolvers": "^5.9.1",
     "@huggingface/transformers": "^4.3.0",
