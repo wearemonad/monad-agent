@@ -6,6 +6,7 @@ Thanks for helping. Bug reports, fixes, skills and connectors are all welcome.
 
 - For anything bigger than a small fix, open an issue first so we can agree on the approach before you invest time.
 - Security problems: please don't open a public issue — see [SECURITY.md](SECURITY.md).
+- Everyone taking part is expected to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 - By contributing, you agree that your contribution is licensed under the [Apache License 2.0](../LICENSE).
 
 ## Development setup
@@ -51,3 +52,4 @@ cd app && bun test src           # unit tests
 - Keep each PR to one change, with a description of what it changes and how you verified it.
 - UI changes: include a screenshot or short recording.
 - Don't bump versions or edit release files — maintainers do that when they release.
+- Pull requests are squash-merged, and need a passing CI run and a maintainer's approval. Your individual commits don't need to be signed — the squash commit GitHub creates on `main` is.
