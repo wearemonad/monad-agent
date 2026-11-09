@@ -601,8 +601,8 @@ export const api = {
   async saveChatAttachment(name: string, base64: string) {
     return request("saveChatAttachment", { name, base64 });
   },
-  async readChatImage(path: string) {
-    return request("readChatImage", { path });
+  async readChatImage(path: string, inline = false) {
+    return request("readChatImage", { path, ...(inline ? { inline } : {}) });
   },
   async openChatImage(path: string) {
     return request("openChatImage", { path });

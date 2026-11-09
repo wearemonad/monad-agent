@@ -1,4 +1,5 @@
 import { Codex } from "@openai/codex-sdk";
+import * as path from "node:path";
 import { Effect } from "effect";
 import type { CodexAuthStrategy } from "../../auth/CodexAuth";
 import type { ImageAspect, ImageRequest } from "../../../shared/images";
@@ -25,7 +26,11 @@ export type CodexImageOptions = {
   /** $CODEX_HOME — where Codex's image tool leaves its files. */
   home: string;
   /** The installed CLI (CodexCli): where it is, and whether it's signed in. */
-  cli: { resolveBinary(): string; status(): CodexAuthStatus };
+  cli: {
+    resolveBinary(): string;
+    /** Async so the check never blocks the backend thread mid-stream. */
+    status(): CodexAuthStatus | Promise<CodexAuthStatus>;
+  };
   runTurn: CodexTurn;
 };
 
@@ -112,7 +117,7 @@ export function codexImageProvider(opts: CodexImageOptions): ImageProvider {
         });
         // A plain "not logged in" is certain; a status check that itself
         // failed (timeout, odd config) is not — let the turn find out.
-        const status = opts.cli.status();
+        const status = yield* Effect.promise(async () => opts.cli.status());
         if (!status.loggedIn && !status.error) {
           return yield* new ImageAuthFailed({
             provider: "codex",
@@ -145,12 +150,56 @@ export function codexImageProvider(opts: CodexImageOptions): ImageProvider {
   };
 }
 
+/** MCP servers in the user's Codex config.toml that are switched on. An image
+ *  turn never calls them, yet `codex exec` boots every one before the turn
+ *  starts (npx/uvx launches, remote handshakes) — per image, so several
+ *  threads asking at once multiply that cost. Only servers DEFINED in
+ *  config.toml can be overridden off: `-c mcp_servers.<unknown>.enabled=false`
+ *  makes Codex reject its whole config ("invalid transport"). Plugin-provided
+ *  servers therefore stay, and names that aren't plain TOML keys are skipped
+ *  rather than risk a config Codex can't parse. Read fresh per request, so
+ *  an edited config.toml can never leave a stale override behind. */
+export function enabledConfigMcpServers(configToml: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = Bun.TOML.parse(configToml);
+  } catch {
+    return []; // Codex will report its own config error; don't add to it
+  }
+  const servers = (parsed as { mcp_servers?: unknown })?.mcp_servers;
+  if (!servers || typeof servers !== "object") return [];
+  return Object.entries(servers as Record<string, unknown>)
+    .filter(
+      ([name, cfg]) =>
+        /^[A-Za-z0-9_-]+$/.test(name) &&
+        !!cfg &&
+        typeof cfg === "object" &&
+        (cfg as { enabled?: unknown }).enabled !== false,
+    )
+    .map(([name]) => name);
+}
+
+async function mcpOffOverrides(codexHomeDir: string): Promise<string[]> {
+  const file = Bun.file(path.join(codexHomeDir, "config.toml"));
+  let text: string;
+  try {
+    text = await file.text();
+  } catch {
+    return []; // no config.toml — nothing to switch off
+  }
+  return enabledConfigMcpServers(text).map(
+    (name) => `mcp_servers.${name}.enabled=false`,
+  );
+}
+
 /** The real CodexTurn: one `codex exec` on a fresh thread, read-only, with
  *  no approvals to wait on (exec has no UI to ask). `workingDirectory` is a
  *  scratch folder — the image tool writes under $CODEX_HOME, not there. */
 export function sdkCodexTurn(deps: {
   auth: CodexAuthStrategy;
   workingDirectory: () => string;
+  /** $CODEX_HOME — its config.toml says which MCP servers to switch off. */
+  home: string;
 }): CodexTurn {
   return async (prompt, signal) => {
     const {
@@ -163,9 +212,11 @@ export function sdkCodexTurn(deps: {
       ...authEnv,
     };
     for (const key of Object.keys(env)) if (env[key] === "") delete env[key];
+    const configOverrides = await mcpOffOverrides(deps.home);
     const codex = new Codex({
       ...(codexPathOverride ? { codexPathOverride } : {}),
       ...(apiKey ? { apiKey } : {}),
+      ...(configOverrides.length > 0 ? { configOverrides } : {}),
       env,
     });
     const thread = codex.startThread({
