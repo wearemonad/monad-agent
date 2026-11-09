@@ -104,6 +104,19 @@ if [[ "${ALLOW_DIRTY:-0}" != "1" && "$ALLOW_DIRTY_FLAG" != "1" ]]; then
 	fi
 fi
 
+# --- Refuse without commit signing -------------------------------------------
+# main's ruleset requires signed commits. Admins bypass it, so an unsigned
+# version bump would still push — as the one unverified commit on main. Check
+# before building/uploading anything, so a missing setup can't leave a release
+# half-published. See docs/releasing.md ("Commit signing").
+if [[ "$DO_RELEASE" == "1" ]] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	if [[ "$(git config --get commit.gpgsign)" != "true" || -z "$(git config --get user.signingkey)" ]]; then
+		echo "✋ Commit signing isn't configured — main requires signed commits." >&2
+		echo "   Set commit.gpgsign + user.signingkey (docs/releasing.md), or pass --no-release." >&2
+		exit 1
+	fi
+fi
+
 # --- Refuse while a dev session runs in this folder -------------------------
 # Since Electrobun 2, `electrobun dev --watch` (bun dev) holds a reader lease in
 # .hutch/locks/electrobun-readers/ for as long as it runs, and `electrobun sync`
