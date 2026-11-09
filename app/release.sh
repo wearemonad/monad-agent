@@ -243,9 +243,13 @@ if [[ "$DO_RELEASE" == "1" ]]; then
 		# active gh account is left alone. An explicit GH_TOKEN wins. If the
 		# owner isn't a logged-in account (an org repo such as wearemonad/…),
 		# the first logged-in account with push access to the repo is used.
+		ORIGIN_REPO="$(git remote get-url origin |
+			sed -E 's#^(https://github\.com/|git@github\.com:)##; s#\.git$##')"
+		# Pin every gh call to origin's repo. With more than one remote (e.g. a
+		# personal fork next to origin) and no `gh repo set-default`, gh refuses
+		# to guess: "No default remote repository has been set for this directory".
+		export GH_REPO="${GH_REPO:-$ORIGIN_REPO}"
 		if [[ -z "${GH_TOKEN:-}" ]]; then
-			ORIGIN_REPO="$(git remote get-url origin |
-				sed -E 's#^(https://github\.com/|git@github\.com:)##; s#\.git$##')"
 			GH_ACCOUNT="${GH_ACCOUNT:-${ORIGIN_REPO%%/*}}"
 			if GH_ACCOUNT_TOKEN="$(gh auth token --user "$GH_ACCOUNT" 2>/dev/null)" &&
 				[[ -n "$GH_ACCOUNT_TOKEN" ]]; then
