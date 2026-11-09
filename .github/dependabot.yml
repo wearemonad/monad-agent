@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: bun
+    directories: ["/", "/app"]
+    schedule:
+      interval: weekly
+    # Matches the one-day minimumReleaseAge in bunfig.toml.
+    cooldown:
+      default-days: 1
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
