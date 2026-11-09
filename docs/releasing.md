@@ -58,6 +58,17 @@ Any static HTTPS host works. R2 is the default because egress is free and the fr
 
 An official release needs all of the following in `app/.env`: the `ELECTROBUN_*` signing credentials, `MONAD_UPDATE_BASE_URL`, and `MONAD_GOOGLE_CLIENT_ID` / `MONAD_GOOGLE_CLIENT_SECRET`. Plus `gh auth login` for the GitHub release.
 
+`main` requires signed commits, and the release commits the version bump to `main`, so commit signing must be set up too — `release.sh` refuses to start without it. With an SSH key:
+
+```sh
+git config gpg.format ssh
+git config user.signingkey ~/.ssh/id_ed25519.pub
+git config commit.gpgsign true
+git config tag.gpgsign true
+```
+
+Add the same public key to GitHub as a **signing key** (Settings → SSH and GPG keys → New SSH key → Key type: Signing Key), or the commits push but show as *Unverified*. The commit email must be a verified email on that GitHub account.
+
 ```sh
 cd app
 ./release.sh canary                 # patch bump (0.1.0 → 0.1.1) → build → publish
