@@ -62,6 +62,12 @@ R2_BUCKET=monad-updates     # optional; this is the default</pre></li>
 
 <h2>5. Shipping a release</h2>
 <p>An official release needs all of the following in <code>app/.env</code>: the <code>ELECTROBUN_*</code> signing credentials, <code>MONAD_UPDATE_BASE_URL</code>, and <code>MONAD_GOOGLE_CLIENT_ID</code> / <code>MONAD_GOOGLE_CLIENT_SECRET</code>. Plus <code>gh auth login</code> for the GitHub release.</p>
+<p><code>main</code> requires signed commits, and the release commits the version bump to <code>main</code>, so commit signing must be set up too — <code>release.sh</code> refuses to start without it. With an SSH key:</p>
+<pre>git config gpg.format ssh
+git config user.signingkey ~/.ssh/id_ed25519.pub
+git config commit.gpgsign true
+git config tag.gpgsign true</pre>
+<p>Add the same public key to GitHub as a <strong>signing key</strong> (Settings → SSH and GPG keys → New SSH key → Key type: Signing Key), or the commits push but show as <em>Unverified</em>. The commit email must be a verified email on that GitHub account.</p>
 <pre>cd app
 ./release.sh canary                 # patch bump (0.1.0 → 0.1.1) → build → publish
 ./release.sh stable minor           # minor bump on the stable channel
