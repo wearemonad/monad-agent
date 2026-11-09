@@ -23,6 +23,14 @@ function hasControlChars(value: string): boolean {
   return false;
 }
 
+/** Values already read (null = known absent), so hot paths — every image
+ *  request reads all image-provider keys, every run its workspace env — stop
+ *  paying a synchronous `security` spawn on the backend's only thread, where
+ *  it stalls every streaming thread. Monad is the only writer of these items
+ *  and keeps the cache in step through set/delete; a failed read (locked
+ *  keychain, denied access) is never cached, so it is retried next time. */
+const cache = new Map<string, string | null>();
+
 /** macOS Keychain-backed secret storage via the `security` CLI.
  *  Secrets never travel to the webview; args are passed as an array (no shell). */
 export const Keychain = {
@@ -53,22 +61,28 @@ export const Keychain = {
       // thread is the wrong place to find out otherwise.
       timeout: 10_000,
     });
+    cache.set(service, secret);
   },
 
   get(service: string): string | null {
+    const known = cache.get(service);
+    if (known !== undefined) return known;
     try {
-      return execFileSync(
+      const value = execFileSync(
         "security",
         ["find-generic-password", "-a", ACCOUNT, "-s", service, "-w"],
         { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
       ).trim();
+      cache.set(service, value);
+      return value;
     } catch (e) {
       // Exit 44 = item genuinely not in the keychain (the common "not set"
       // case). Any other status means the item may exist but the read failed
       // (keychain locked, access denied) — log it so we don't mistakenly tell
       // the user to configure a credential they already set.
       const status = (e as { status?: number }).status;
-      if (status !== 44) {
+      if (status === 44) cache.set(service, null);
+      else {
         console.warn(
           `[keychain] read failed for "${service}" (exit ${status ?? "?"})`,
         );
@@ -78,6 +92,7 @@ export const Keychain = {
   },
 
   delete(service: string): void {
+    cache.set(service, null);
     try {
       execFileSync(
         "security",

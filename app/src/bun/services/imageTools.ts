@@ -18,6 +18,9 @@ export type GenerateImage = (
   | { ok: false; message: string }
 >;
 
+/** Hard per-call limit for generate_image, as the CLI enforces it. */
+export const IMAGE_TOOL_TIMEOUT_MS = 5 * 60_000;
+
 /** In-process MCP server giving the agent image generation — whichever model
  *  Settings → Image models routes to (Codex's gpt-image by default). */
 export function buildImageToolsServer(generate: GenerateImage) {
@@ -27,6 +30,10 @@ export function buildImageToolsServer(generate: GenerateImage) {
     instructions:
       "Generates images and shows them in the chat. Use generate_image whenever the user asks you to create, draw, design or render a picture, illustration, logo, mockup or photo. You can't see the result, so don't describe it in detail.",
     tools: [buildGenerateImageTool(generate)],
+    // Explicit, so an MCP_TOOL_TIMEOUT in a workspace .env (a value meant
+    // for quick tools) can't cut an image off mid-generation. Just above the
+    // backend's own 4-minute bound, which answers with a readable error.
+    timeout: IMAGE_TOOL_TIMEOUT_MS,
   });
 }
 

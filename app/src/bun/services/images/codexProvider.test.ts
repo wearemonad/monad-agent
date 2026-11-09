@@ -5,7 +5,11 @@ import * as path from "node:path";
 import { Effect, Exit } from "effect";
 import type { CodexAuthStatus } from "../../../shared/ipc";
 import type { ImageFailure } from "./ImageFailure";
-import { type CodexTurn, codexImageProvider } from "./codexProvider";
+import {
+  type CodexTurn,
+  codexImageProvider,
+  enabledConfigMcpServers,
+} from "./codexProvider";
 
 // The Codex fallback, driven by a fake Codex turn and a temp CODEX_HOME.
 // Like the real `codex exec`, the fake reports nothing about images in its
@@ -174,5 +178,53 @@ describe("Codex image provider", () => {
       _tag: "ImageAuthFailed",
       reason: "expired",
     });
+  });
+});
+
+describe("Codex image provider — concurrency", () => {
+  test("an async sign-in check is awaited, and parallel requests all finish", async () => {
+    const { turn } = turnThatDraws("ig_par.png");
+    let checks = 0;
+    const p = provider(turn, (async () => {
+      checks++;
+      await Bun.sleep(5);
+      return signedIn();
+    }) as unknown as () => CodexAuthStatus);
+    const results = await Promise.all(
+      [1, 2, 3].map(() =>
+        Effect.runPromise(p.generate({ prompt: "a red fox" })),
+      ),
+    );
+    expect(checks).toBe(3);
+    for (const images of results) expect(images.length).toBeGreaterThan(0);
+  });
+});
+
+describe("MCP servers switched off for image turns", () => {
+  test("lists config.toml servers that are on, skipping disabled and odd names", () => {
+    const toml = `
+model = "gpt-5"
+[mcp_servers.context7]
+command = "npx"
+[mcp_servers.aws-mcp]
+command = "uvx"
+[mcp_servers.off]
+command = "x"
+enabled = false
+[mcp_servers."has.dot"]
+command = "y"
+[mcp_servers.node_repl.env]
+FOO = "1"
+`;
+    expect(enabledConfigMcpServers(toml)).toEqual([
+      "context7",
+      "aws-mcp",
+      "node_repl",
+    ]);
+  });
+
+  test("no servers, or a config that doesn't parse, overrides nothing", () => {
+    expect(enabledConfigMcpServers('model = "x"')).toEqual([]);
+    expect(enabledConfigMcpServers("[[[ not toml")).toEqual([]);
   });
 });

@@ -90,7 +90,9 @@ export class CodexCli {
     }
   }
 
-  /** `codex login status` — exits 0 and names the method when signed in. */
+  /** `codex login status` — exits 0 and names the method when signed in.
+   *  Synchronous: for Settings and diagnostics only. Hot paths (every image
+   *  request) use statusAsync, which never blocks the backend thread. */
   status(): CodexAuthStatus {
     let bin: string;
     try {
@@ -104,25 +106,105 @@ export class CodexCli {
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 15_000,
     });
-    const text = `${res.stdout ?? ""}${res.stderr ?? ""}`.trim();
-    if (res.status === 0) {
-      const method = /chatgpt/i.test(text)
-        ? "ChatGPT"
-        : /api key/i.test(text)
-          ? "API key"
-          : undefined;
-      return { loggedIn: true, ...(method ? { method } : {}) };
-    }
-    // Non-zero exit with "Not logged in" is the signed-out case; anything
-    // else (spawn failure, timeout, broken config) is reported as an error.
-    if (typeof res.status === "number" && /not logged in/i.test(text)) {
-      return { loggedIn: false };
-    }
-    return {
-      loggedIn: false,
-      error: text || String(res.error?.message ?? "codex login status failed"),
-    };
+    const status = parseLoginStatus(
+      res.status,
+      `${res.stdout ?? ""}${res.stderr ?? ""}`,
+      res.error?.message,
+    );
+    this.remember(status);
+    return status;
   }
+
+  private signedInAt = 0;
+  private signedInStatus: CodexAuthStatus | null = null;
+  private pendingStatus: Promise<CodexAuthStatus> | null = null;
+
+  /** Only a positive answer is cached: signing in again must take effect
+   *  on the next request, while an expired login surfaces as a failed turn
+   *  anyway (classifyCodexFailure → ImageAuthFailed). */
+  private remember(status: CodexAuthStatus): void {
+    if (status.loggedIn) {
+      this.signedInStatus = status;
+      this.signedInAt = Date.now();
+    } else {
+      this.signedInStatus = null;
+    }
+  }
+
+  /** `codex login status` without blocking the event loop: spawned async,
+   *  a signed-in answer reused for STATUS_TTL_MS, and concurrent callers
+   *  (several threads asking for images at once) share one spawn. */
+  statusAsync(): Promise<CodexAuthStatus> {
+    if (
+      this.signedInStatus &&
+      Date.now() - this.signedInAt < CodexCli.STATUS_TTL_MS
+    ) {
+      return Promise.resolve(this.signedInStatus);
+    }
+    this.pendingStatus ??= this.spawnStatus().finally(() => {
+      this.pendingStatus = null;
+    });
+    return this.pendingStatus;
+  }
+
+  static readonly STATUS_TTL_MS = 5 * 60_000;
+
+  private async spawnStatus(): Promise<CodexAuthStatus> {
+    let bin: string;
+    try {
+      bin = this.resolveBinary();
+    } catch (e) {
+      return { loggedIn: false, error: String((e as Error).message) };
+    }
+    try {
+      const proc = Bun.spawn([bin, "login", "status"], {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 15_000,
+      });
+      const [out, err, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      const status = parseLoginStatus(
+        proc.signalCode ? null : code,
+        `${out}${err}`,
+      );
+      this.remember(status);
+      return status;
+    } catch (e) {
+      return { loggedIn: false, error: String((e as Error)?.message ?? e) };
+    }
+  }
+}
+
+/** Read `codex login status`'s verdict. `code` is null when the process
+ *  never exited normally (spawn failure, timeout kill). */
+export function parseLoginStatus(
+  code: number | null,
+  output: string,
+  spawnError?: string,
+): CodexAuthStatus {
+  const text = output.trim();
+  if (code === 0) {
+    const method = /chatgpt/i.test(text)
+      ? "ChatGPT"
+      : /api key/i.test(text)
+        ? "API key"
+        : undefined;
+    return { loggedIn: true, ...(method ? { method } : {}) };
+  }
+  // Non-zero exit with "Not logged in" is the signed-out case; anything
+  // else (spawn failure, timeout, broken config) is reported as an error.
+  if (typeof code === "number" && /not logged in/i.test(text)) {
+    return { loggedIn: false };
+  }
+  return {
+    loggedIn: false,
+    error: text || spawnError || "codex login status failed",
+  };
 }
 
 /** Keys that would make the Codex CLI bill an API key instead of the

@@ -457,17 +457,31 @@ function GeneratedImage({ path, name }: { path: string; name: string }) {
   const [missing, setMissing] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
 
+  const [inlined, setInlined] = useState(false);
+
   useEffect(() => {
     let live = true;
+    setInlined(false);
     void api.readChatImage(path).then((res) => {
       if (!live) return;
-      if (res.dataUrl) setSrc(res.dataUrl);
+      const next = res.url ?? res.dataUrl;
+      if (next) setSrc(next);
       else setMissing(true);
     });
     return () => {
       live = false;
     };
   }, [path]);
+
+  /** The loopback URL didn't load (webview policy, server gone): ask once
+   *  for the bytes inline instead. */
+  const fallBackToInline = () => {
+    if (inlined) return setMissing(true);
+    setInlined(true);
+    void api
+      .readChatImage(path, true)
+      .then((res) => (res.dataUrl ? setSrc(res.dataUrl) : setMissing(true)));
+  };
 
   const save = async () => {
     const res = await api.saveChatImage(path);
@@ -492,7 +506,13 @@ function GeneratedImage({ path, name }: { path: string; name: string }) {
         onClick={() => void api.openChatImage(path)}
       >
         {src ? (
-          <img src={src} alt={name} className="block max-h-[32rem] w-auto" />
+          <img
+            src={src}
+            alt={name}
+            decoding="async"
+            onError={fallBackToInline}
+            className="block max-h-[32rem] w-auto"
+          />
         ) : (
           <div className="flex size-64 items-center justify-center">
             <Loader2 size={18} className="animate-spin text-muted-foreground" />

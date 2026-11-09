@@ -59,6 +59,10 @@ import {
   servableImagePath,
 } from "./services/chatImages";
 import {
+  type ChatImageServer,
+  startChatImageServer,
+} from "./services/chatImageServer";
+import {
   buildImageToolsServer,
   type GenerateImage,
 } from "./services/imageTools";
@@ -361,9 +365,15 @@ const appRuntime = makeAppRuntime(
       // ChatGPT login.
       codex: codexImageProvider({
         home: codexHome(),
-        cli: codexCli,
+        // The async check: an image request must never park the backend
+        // thread (and with it every other thread's stream) on a spawnSync.
+        cli: {
+          resolveBinary: () => codexCli.resolveBinary(),
+          status: () => codexCli.statusAsync(),
+        },
         runTurn: sdkCodexTurn({
           auth: openaiSubscriptionAuth,
+          home: codexHome(),
           workingDirectory: () => {
             const dir = path.join(os.tmpdir(), "monad-codex-images");
             fs.mkdirSync(dir, { recursive: true });
@@ -1160,6 +1170,13 @@ function generatedImagePath(file: string): string | null {
     path.join(codexHome(), "generated_images"),
     monadImagesDir(),
   ]);
+}
+
+/** Loopback server for generated images — started on first use. */
+let imageServer: ChatImageServer | null = null;
+function chatImageServer(): ChatImageServer {
+  imageServer ??= startChatImageServer(generatedImagePath);
+  return imageServer;
 }
 
 /** A workspace's sidebar threads: Claude sessions and OpenAI (Codex)
@@ -2643,14 +2660,19 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           return { error: String((e as Error).message ?? e) };
         }
       },
-      readChatImage: ({ path: file }) => {
+      readChatImage: async ({ path: file, inline }) => {
         const real = generatedImagePath(file);
         if (!real) return { error: "Image not found." };
+        // Normally just a URL: the bytes go over loopback HTTP, not this
+        // bridge (see chatImageServer). `inline` is the fallback for a
+        // webview that refused the URL — read async, off the hot path.
+        if (!inline) return { url: chatImageServer().urlFor(real) };
         const mime =
           CHAT_IMAGE_TYPES[path.extname(real).slice(1).toLowerCase()] ??
           "image/png";
+        const bytes = await Bun.file(real).bytes();
         return {
-          dataUrl: `data:${mime};base64,${fs.readFileSync(real).toString("base64")}`,
+          dataUrl: `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`,
         };
       },
       openChatImage: ({ path: file }) => {

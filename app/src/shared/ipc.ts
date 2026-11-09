@@ -965,9 +965,12 @@ export type MonadRPC = {
       };
       /** A generated image shown in the chat, as a data URL. Only files in
        *  Codex's generated_images folder are served. */
+      /** Where the webview loads a generated image from: a loopback URL
+       *  (bytes never cross this bridge), or with `inline` a data URL — the
+       *  fallback when the webview refuses the URL. */
       readChatImage: {
-        params: { path: string };
-        response: { dataUrl?: string; error?: string };
+        params: { path: string; inline?: boolean };
+        response: { url?: string; dataUrl?: string; error?: string };
       };
       /** Open a generated image with the default app (Preview). */
       openChatImage: { params: { path: string }; response: { ok: boolean } };
