@@ -159,6 +159,7 @@ import { backgroundLoops, type LoopSpec } from "./runtime/BackgroundLoops";
 import { BackgroundRuns } from "./services/BackgroundRuns";
 import { schedulerLoops } from "./services/SchedulerLoop";
 import { PerfMonitor } from "./services/PerfMonitor";
+import { ForegroundGate } from "./services/ForegroundGate";
 import {
   appendFakeTurn,
   isFakeSessionId,
@@ -214,6 +215,11 @@ const perf = new PerfMonitor({
   enabled: settings.perfDiagnostics ?? isDevBuild,
 });
 perf.start();
+
+// Holds background work (memory sync, Drive/Gmail sync, folder polls,
+// catch-up jobs…) back while the user is streaming or just opened a Thread,
+// and for the first minute after launch (PARALLEL-THREADS-PR2, 2d).
+const foreground = new ForegroundGate();
 
 // Fake-stream harness, dev builds only: MONAD_FAKE_AGENT=N seeds N fake
 // Threads (~40 messages each) and serves interactive runs with a
@@ -520,6 +526,26 @@ function syncMemory(workspaceId: string, workspacePath: string): Promise<void> {
   });
 }
 
+/** Background freshening after a Turn or an ingest: waits for the app to go
+ *  idle, and calls made while one is already waiting share it — three Turns
+ *  finishing close together cause one sync, not three. (Agent tools and the
+ *  user's own actions call syncMemory directly: someone is waiting on them.) */
+const scheduledMemorySyncs = new Map<string, Promise<void>>();
+function scheduleMemorySync(
+  workspaceId: string,
+  workspacePath: string,
+): Promise<void> {
+  const waiting = scheduledMemorySyncs.get(workspaceId);
+  if (waiting) return waiting;
+  const next = foreground.whenIdle().then(() => {
+    // Leave the queue before syncing: a Turn ending mid-sync schedules anew.
+    scheduledMemorySyncs.delete(workspaceId);
+    return syncMemory(workspaceId, workspacePath);
+  });
+  scheduledMemorySyncs.set(workspaceId, next);
+  return next;
+}
+
 /** Workspace-scoped MCP config: the workspace's own .mcp.json (with ${VAR}
  *  expanded from the merged env) plus the in-process Google tools when that
  *  workspace has a Google account connected. Passed with strictMcpConfig so
@@ -789,7 +815,7 @@ function handleIngestEvent(event: AgentStreamEvent): boolean {
   pushIngestStatus();
   // Ingest wrote/updated knowledge docs — fold them into the memory index.
   const ws = workspaces.get(ctx.workspaceId);
-  if (ws) void syncMemory(ws.id, ws.path);
+  if (ws) void scheduleMemorySync(ws.id, ws.path);
   return true;
 }
 
@@ -845,7 +871,7 @@ function captureInteractiveRun(
           );
         }
       }
-      await syncMemory(ctx.workspaceId, ctx.workspacePath);
+      await scheduleMemorySync(ctx.workspaceId, ctx.workspacePath);
       maybeStartMemoryReview(ctx);
     } catch (e) {
       console.error(`[memory] capture failed: ${(e as Error).message}`);
@@ -1043,7 +1069,7 @@ function handleGraphBackfillEvent(event: AgentStreamEvent): boolean {
     );
   if (queued.length && workspaces.active()?.id === ws.id)
     send()?.reviewChanged({ items: workspaces.listReview(ws.id) });
-  void syncMemory(ws.id, ws.path);
+  void scheduleMemorySync(ws.id, ws.path);
   pushBackground();
   return true;
 }
@@ -1093,6 +1119,7 @@ function routeAgentEvent(event: AgentStreamEvent): void {
   // while the app is frontmost, so these are quiet when focused. A
   // deliberate Stop stays silent entirely.
   if (event.kind === "run-finished" || event.kind === "run-error") {
+    foreground.turnEnded(event.runId);
     const ctx = interactiveRuns.get(event.runId);
     if (ctx) {
       const wsName = workspaces.get(ctx.workspaceId)?.name ?? "Monad";
@@ -1216,6 +1243,8 @@ const scheduler = new SchedulerService(
   // Why a due job didn't start (offline, busy, claimed, interrupted) lands in
   // the workspace's .monad/activity.jsonl for diagnosis.
   (workspacePath, entry) => activity.append(workspacePath, entry),
+  // Catch-up jobs wait for a quiet moment; jobs due right now never do.
+  () => foreground.isIdle(),
 );
 scheduler.start();
 
@@ -1806,6 +1835,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
               workspacePath: ws.path,
               promptSnippet: prompt.slice(0, 80),
             });
+            foreground.turnStarted(runId);
             return { runId };
           }
           const id = provider ?? settings.authMode;
@@ -1841,6 +1871,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
             workspacePath: ws.path,
             promptSnippet: prompt.replace(/\s+/g, " ").trim().slice(0, 80),
           });
+          foreground.turnStarted(runId);
           return { runId };
         } catch (e) {
           return { error: String((e as Error).message ?? e) };
@@ -1905,6 +1936,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         return { byWorkspace };
       },
       getSessionHistory: async ({ sessionId }) => {
+        foreground.threadOpened();
         const cwd = activeWs().path;
         const codexThread = codexThreads.read(cwd, sessionId);
         if (codexThread) return { items: codexThread.items };
@@ -3562,6 +3594,10 @@ function backgroundLoopSpecs(): LoopSpec[] {
 }
 
 function rawLoopSpecs(): LoopSpec[] {
+  // Gated loops wait for the user to pause (ForegroundGate; at most 10 min).
+  // Not gated: the scheduler tick (it holds back catch-up jobs itself) and
+  // the update check (async and tiny).
+  const whenIdle = () => foreground.whenIdle();
   return [
     // Scheduled jobs: a check 15 s after launch then every minute (abandoned
     // if wedged), and the 30-minute "alive" line. Lazy: the runtime — and so
@@ -3574,6 +3610,7 @@ function rawLoopSpecs(): LoopSpec[] {
       name: "drive-sync",
       firstDelay: 10_000,
       every: 5 * 60_000,
+      waitFor: whenIdle,
       run: syncAllConnected,
     },
     // Watched local folders poll faster — dropping a file there should feel live.
@@ -3581,6 +3618,7 @@ function rawLoopSpecs(): LoopSpec[] {
       name: "watch-folders",
       firstDelay: 12_000,
       every: 60_000,
+      waitFor: whenIdle,
       run: pollWatchFolders,
     },
     // Memory index warm-up: the first sync after install walks ALL history
@@ -3590,6 +3628,7 @@ function rawLoopSpecs(): LoopSpec[] {
     {
       name: "memory",
       firstDelay: 8_000,
+      waitFor: whenIdle,
       run: async () => {
         for (const ws of workspaces.list()) {
           await syncMemory(ws.id, ws.path);
@@ -3604,6 +3643,7 @@ function rawLoopSpecs(): LoopSpec[] {
       name: "graph-backfill",
       firstDelay: 60_000,
       every: 10 * 60_000,
+      waitFor: whenIdle,
       run: runDueGraphBackfill,
     },
     // Proactive health checks: shortly after launch, then daily. Bounded so a
@@ -3613,6 +3653,8 @@ function rawLoopSpecs(): LoopSpec[] {
       firstDelay: 30_000,
       every: 24 * 3600_000,
       timeout: 10 * 60_000,
+      // Its MCP smoke tests spawn npx servers — not while the user works.
+      waitFor: whenIdle,
       run: () => runHealthChecks().then(() => {}),
     },
     // Calendar lookahead for meeting-prep briefs (no-op unless enabled per workspace).
@@ -3621,6 +3663,7 @@ function rawLoopSpecs(): LoopSpec[] {
       firstDelay: 20_000,
       every: 5 * 60_000,
       timeout: 2 * 60_000,
+      waitFor: whenIdle,
       run: pollMeetingPrep,
     },
     {
