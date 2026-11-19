@@ -168,7 +168,7 @@ type MonadState = {
   /** Every Thread in memory: the active one, any with a run in flight, and
    *  up to IDLE_THREADS_MAX recently used idle ones. */
   threads: Record<string, ThreadState>;
-  /** runId → thread key: routes every stream event to the thread that
+  /** runId → Thread id: routes every stream event to the Thread that
    *  started the run, wherever the user is looking now. */
   runThreads: Record<string, string>;
   /** sessionId → runId for every run in flight (any thread) — the sidebar's
@@ -283,9 +283,9 @@ type MonadState = {
   /** Show a Thread that isn't in memory yet, straight away and unloaded
    *  (skeleton) — its history is fetched by the caller (openHistory). */
   startThreadLoad: (sessionId: string) => void;
-  /** Store a Thread's history under it (shown only if it's still the one on
-   *  screen); events that arrived meanwhile replay on top. A Thread not in
-   *  memory at all is created and shown. */
+  /** Store a Thread's history under it (startThreadLoad made it; it shows
+   *  only if it's still the one on screen); events that arrived meanwhile
+   *  replay on top. A Thread deleted meanwhile is left gone. */
   openHistory: (
     sessionId: string,
     items: ChatItem[],
@@ -637,9 +637,7 @@ function stepEvent(
     ? { ...t, ...reduceThread(t, e) }
     : { ...t, pending: [...t.pending, e] };
   const resync =
-    ended && t.stale && t.loaded
-      ? (next.resumeSessionId ?? undefined)
-      : undefined;
+    ended && t.stale ? (next.resumeSessionId ?? undefined) : undefined;
   return {
     patch: { ...global, threads: { ...s.threads, [key]: next } },
     resync,
@@ -803,13 +801,9 @@ export const useStore = create<MonadState>((set, get) => ({
   },
 
   openHistory: (sessionId, items, contextTokens) => {
-    const known = threadIdFor(get(), sessionId);
-    if (!known) {
-      // Not in memory at all: create it, already loaded, and show it.
-      get().startThreadLoad(sessionId);
-    }
     set((s) => {
       const id = threadIdFor(s, sessionId);
+      // Deleted or evicted while it loaded: nothing to store it under.
       if (!id) return {};
       const t = s.threads[id];
       // Loaded meanwhile (or already): the live Thread wins over disk.

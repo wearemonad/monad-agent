@@ -198,6 +198,17 @@ describe("history load race", () => {
   });
 });
 
+describe("history for a Thread that's gone", () => {
+  test("a Thread deleted while it loaded stays deleted", () => {
+    st().startThreadLoad("s-del");
+    st().dropThreadForSession("s-del");
+    const active = st().activeThreadId;
+    st().openHistory("s-del", [{ type: "user", text: "q" }], undefined);
+    expect(threadFor("s-del")).toBeUndefined();
+    expect(st().activeThreadId).toBe(active);
+  });
+});
+
 describe("memory bound", () => {
   test("at most 20 idle loaded Threads stay; running and active never go", () => {
     st().registerRun("keep-run");
@@ -208,6 +219,7 @@ describe("memory bound", () => {
       sessionId: "running",
     });
     for (let i = 0; i < 30; i++) {
+      st().startThreadLoad(`idle-${i}`);
       st().openHistory(
         `idle-${i}`,
         [{ type: "user", text: `${i}` }],
@@ -234,6 +246,17 @@ describe("memory bound", () => {
 });
 
 describe("dropped batches", () => {
+  test("a Thread marked stale while loading still resyncs when its run ends", () => {
+    st().startThreadLoad("s-sl");
+    st().registerRun("r-sl");
+    st().setRun("running", "r-sl");
+    st().markStreamsStale();
+    const resync = st().applyEvents([
+      { kind: "run-finished", runId: "r-sl", sessionId: "s-sl", numTurns: 1 },
+    ]);
+    expect(resync).toEqual(["s-sl"]);
+  });
+
   test("a stale Thread asks for a resync when its run ends", () => {
     st().registerRun("r-s");
     st().setRun("running", "r-s");
