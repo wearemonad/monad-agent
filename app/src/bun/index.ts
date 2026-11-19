@@ -2023,6 +2023,11 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
       abortRun: ({ runId }) => ({
         ok: agent.abortRun(runId) || codexAgent.abortRun(runId),
       }),
+      liveRuns: ({ runIds }) => ({
+        live: runIds.filter(
+          (r) => agent.isTurnActive(r) || codexAgent.isTurnActive(r),
+        ),
+      }),
       prewarm: ({ resumeSessionId, model, provider, runOptions }) => {
         try {
           // Codex spawns one process per turn — there is nothing to warm.

@@ -619,6 +619,9 @@ export type MonadRPC = {
         response: { runId: string } | { error: string };
       };
       abortRun: { params: { runId: string }; response: { ok: boolean } };
+      /** Which of these runs are still in flight — after a lost streamBatch,
+       *  the webview ends the others itself (their end may have been lost). */
+      liveRuns: { params: { runIds: string[] }; response: { live: string[] } };
       /** Pre-warm: boot the active workspace's agent session before the user
        *  sends, so the first message pays API latency only. resumeSessionId
        *  primes a reopened thread; omit it for a fresh one. Best-effort — the

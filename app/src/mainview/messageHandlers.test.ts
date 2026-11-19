@@ -23,14 +23,19 @@ beforeAll(async () => {
 
 /** Handlers wired to spies; `listRequests` counts every list/snapshot RPC
  *  the webview would send, `resynced` every Thread reload asked for. */
-function harness() {
+function harness(liveRuns: string[] = []) {
   let listRequests = 0;
   const resynced: string[] = [];
+  const asked: string[][] = [];
   const { handlers } = createMessageHandlers({
     refreshSidebar: async () => {
       listRequests++;
     },
     resyncThread: (sessionId) => resynced.push(sessionId),
+    liveRuns: async (runIds) => {
+      asked.push(runIds);
+      return runIds.filter((r) => liveRuns.includes(r));
+    },
     getSettings: () => {},
     refreshOllama: () => {},
     zoom: () => {},
@@ -40,6 +45,7 @@ function harness() {
     handlers,
     listRequests: () => listRequests,
     resynced,
+    asked,
     /** Deliver events as bun would: one streamBatch, next seq. */
     batch: (events: AgentStreamEvent[], skip = 0) => {
       seq += 1 + skip;
@@ -150,5 +156,43 @@ describe("webview message handlers", () => {
       { kind: "run-finished", runId: "turn-5", sessionId: "s-5", numTurns: 1 },
     ]);
     expect(h.resynced).toEqual([]);
+  });
+
+  test("a run that ended inside a lost batch is closed and resynced", async () => {
+    useStore.setState({ threads: {}, runThreads: {}, runningSessions: {} });
+    const h = harness(["turn-7"]);
+    running("turn-6");
+    h.batch([{ kind: "run-started", runId: "turn-6", sessionId: "s-6" }]);
+    running("turn-7");
+    h.batch([{ kind: "run-started", runId: "turn-7", sessionId: "s-7" }]);
+    // the lost batch carried turn-6's run-finished; turn-7 still streams
+    h.batch([{ kind: "text-delta", runId: "turn-7", text: "x" }], 1);
+    await Bun.sleep(0);
+    expect(h.asked).toEqual([["turn-6", "turn-7"]]);
+    expect(h.resynced).toEqual(["s-6"]);
+    const s = useStore.getState();
+    expect(s.runningSessions["s-6"]).toBeUndefined();
+    expect(s.runningSessions["s-7"]).toBe("turn-7");
+  });
+
+  test("a run bun hasn't started yet is not asked about", async () => {
+    useStore.setState({ threads: {}, runThreads: {}, runningSessions: {} });
+    const h = harness();
+    running("turn-9"); // sent, no run-started yet
+    running("turn-10");
+    h.batch([{ kind: "run-started", runId: "turn-10", sessionId: "s-10" }]);
+    h.batch([{ kind: "text-delta", runId: "turn-10", text: "x" }], 1);
+    await Bun.sleep(0);
+    expect(h.asked).toEqual([["turn-10"]]);
+    expect(useStore.getState().runThreads["turn-9"]).toBeDefined();
+  });
+
+  test("bun is only asked about live runs after a gap", async () => {
+    const h = harness();
+    running("turn-8");
+    h.batch([{ kind: "run-started", runId: "turn-8", sessionId: "s-8" }]);
+    h.batch([{ kind: "text-delta", runId: "turn-8", text: "x" }]);
+    await Bun.sleep(0);
+    expect(h.asked).toEqual([]);
   });
 });

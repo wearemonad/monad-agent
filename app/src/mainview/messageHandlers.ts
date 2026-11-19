@@ -12,6 +12,8 @@ export type MessageHandlerDeps = {
   refreshSidebar: () => Promise<void>;
   /** A Thread missed a stream batch and its run has ended: reload it. */
   resyncThread: (sessionId: string) => void;
+  /** Which of these runs bun still has in flight. */
+  liveRuns: (runIds: string[]) => Promise<string[]>;
   getSettings: () => void;
   refreshOllama: () => void;
   zoom: (direction: "in" | "out" | "reset") => void;
@@ -31,14 +33,52 @@ export function createMessageHandlers(deps: MessageHandlerDeps): {
    *  bun's sequence midway). */
   let lastSeq: number | null = null;
 
+  /** The lost batch may have held a run's end, which never comes again:
+   *  ask bun which runs still stream and end the rest here (each is stale,
+   *  so ending it resyncs it from disk). */
+  async function closeLostRuns() {
+    // Only runs bun has started (run-started seen): one the webview just
+    // sent may not have reached bun yet.
+    const { threads, runningSessions } = store();
+    const started = new Set(Object.values(runningSessions));
+    const running = Object.values(threads)
+      .filter(
+        (t) => t.runState === "running" && started.has(t.activeRunId ?? ""),
+      )
+      .map((t) => ({
+        runId: t.activeRunId as string,
+        sessionId: t.resumeSessionId,
+      }));
+    if (!running.length) return;
+    const answer = await deps
+      .liveRuns(running.map((r) => r.runId))
+      .catch(() => null);
+    if (!answer) return; // can't tell: the ordinary path still resyncs
+    const live = new Set(answer);
+    const ended = running.filter((r) => r.sessionId && !live.has(r.runId));
+    if (!ended.length) return;
+    // A run whose real end arrived meanwhile has no route left: ignored.
+    const resync = store().applyEvents(
+      ended.map((r) => ({
+        kind: "run-finished" as const,
+        runId: r.runId,
+        sessionId: r.sessionId as string,
+        numTurns: 0,
+      })),
+    );
+    for (const sessionId of resync) deps.resyncThread(sessionId);
+  }
+
   const handlers: WebviewMessageHandlers = {
     streamBatch: ({ seq, runs }) => {
       // A gap means a batch never arrived: every streaming Thread may be
       // short, so each reloads from disk once its run ends.
-      if (lastSeq !== null && seq !== lastSeq + 1) store().markStreamsStale();
+      const gap = lastSeq !== null && seq !== lastSeq + 1;
+      if (gap) store().markStreamsStale();
       lastSeq = seq;
       const resync = store().applyEvents(runs.flatMap((r) => r.events));
       for (const sessionId of resync) deps.resyncThread(sessionId);
+      if (gap) void closeLostRuns();
     },
     permissionRequest: (req) => store().enqueuePermission(req),
     workspaceChanged: () => {

@@ -38,6 +38,7 @@ const { handlers: messageHandlers } = createMessageHandlers({
     if (activeThread(useStore.getState()).resumeSessionId === sessionId)
       void api.openSession(sessionId);
   },
+  liveRuns: async (runIds) => (await request("liveRuns", { runIds })).live,
   getSettings: () => void api.getSettings(),
   refreshOllama: () => void refreshOllama(),
   zoom: (direction) => {
