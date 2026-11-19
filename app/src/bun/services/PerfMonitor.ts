@@ -62,6 +62,7 @@ export class PerfMonitor {
     renders: [],
     clicks: [],
     messages: [],
+    hidden: [],
   };
 
   constructor(opts: {
@@ -159,6 +160,10 @@ export class PerfMonitor {
     s.renders.push(...report.renders);
     s.clicks.push(...report.clicks);
     s.messages.push(report.messages);
+    if (report.hiddenMs > 0) {
+      s.hidden.push({ ts: report.messages.ts, ms: report.hiddenMs });
+      this.log(`webview hidden ${round(report.hiddenMs)}ms`);
+    }
     for (const t of report.longTasks)
       this.log(`webview long-task ${round(t.ms)}ms`);
     for (const r of report.renders)

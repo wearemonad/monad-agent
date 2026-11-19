@@ -50,17 +50,42 @@ let clicks: ClickSample[] = [];
 let messages: MessageBucket["byType"] = {};
 let windowStart = performance.now();
 let pending: PendingClick | null = null;
+/** Hidden-window bookkeeping: WebKit throttles timers and stops rAF while
+ *  the window is hidden, so heartbeat gaps then are not work and a click
+ *  can never paint. Measurements pause; the hidden time is reported. */
+let hiddenMs = 0;
+let hiddenSince: number | null = null;
+/** Bumped on every visibility change: a heartbeat gap that spans one is
+ *  not recorded. */
+let visibilityEpoch = 0;
+
+function onVisibilityChange(): void {
+  const now = performance.now();
+  visibilityEpoch++;
+  if (document.hidden) {
+    hiddenSince ??= now;
+    pending = null; // it cannot paint while hidden
+  } else if (hiddenSince !== null) {
+    hiddenMs += now - hiddenSince;
+    hiddenSince = null;
+  }
+}
 
 function startHeartbeat(): { stop: () => void } {
   const channel = new MessageChannel();
   let last = performance.now();
+  let epoch = visibilityEpoch;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
   channel.port1.onmessage = () => {
     const now = performance.now();
     const gap = now - last;
+    const sawChange = epoch !== visibilityEpoch;
     last = now;
-    if (gap > LAG_THRESHOLD_MS) longTasks.push({ ts: Date.now(), ms: gap });
+    epoch = visibilityEpoch;
+    if (gap > LAG_THRESHOLD_MS && !document.hidden && !sawChange) {
+      longTasks.push({ ts: Date.now(), ms: gap });
+    }
     if (!stopped)
       timer = setTimeout(() => channel.port2.postMessage(0), HEARTBEAT_MS);
   };
@@ -148,7 +173,18 @@ function flush(): void {
     byType: messages,
   };
   windowStart = now;
-  const report: PerfReport = { longTasks, renders, clicks, messages: bucket };
+  if (hiddenSince !== null) {
+    hiddenMs += now - hiddenSince;
+    hiddenSince = now;
+  }
+  const report: PerfReport = {
+    longTasks,
+    renders,
+    clicks,
+    messages: bucket,
+    hiddenMs,
+  };
+  hiddenMs = 0;
   longTasks = [];
   renders = [];
   clicks = [];
@@ -161,6 +197,8 @@ export const perf = {
    *  state follows settings.perfDiagnostics from then on. */
   init(send: (report: PerfReport) => void): void {
     sendReport = send;
+    if (document.hidden) hiddenSince = performance.now();
+    document.addEventListener("visibilitychange", onVisibilityChange);
     useStore.subscribe((s) => {
       perf.setEnabled(!!s.settings?.perfDiagnostics);
       checkTarget();
@@ -183,6 +221,7 @@ export const perf = {
       renders = [];
       clicks = [];
       messages = {};
+      hiddenMs = 0;
     }
   },
 

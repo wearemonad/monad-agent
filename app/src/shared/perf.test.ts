@@ -13,6 +13,7 @@ const empty = (): PerfSamples => ({
   renders: [],
   clicks: [],
   messages: [],
+  hidden: [],
 });
 
 describe("percentile", () => {
@@ -102,6 +103,18 @@ describe("formatPerfReport", () => {
     const text = formatPerfReport(s, { now, windowMs: 4000 });
     // 60 messages over 4 s = 15/s; peak bucket 50 per 2 s = 25/s
     expect(text).toMatch(/streamEvent\s+15\.0\/s\s+peak 25\.0\/s\s+1\.5 KB\/s/);
+  });
+
+  test("says how long the window was hidden, when it was", () => {
+    const s = empty();
+    expect(formatPerfReport(s, { now, windowMs: 60_000 })).not.toContain(
+      "hidden",
+    );
+    s.hidden.push({ ts: now - 5000, ms: 40_000 });
+    s.hidden.push({ ts: now - 1000, ms: 2_500 });
+    expect(formatPerfReport(s, { now, windowMs: 60_000 })).toContain(
+      "Window hidden for 42.5 s",
+    );
   });
 
   test("samples older than the window are left out", () => {

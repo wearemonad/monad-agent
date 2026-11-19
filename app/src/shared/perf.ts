@@ -64,12 +64,19 @@ export type MessageBucket = {
   byType: Record<string, { count: number; bytes: number }>;
 };
 
+/** The window was hidden or covered for `ms`. WebKit throttles timers and
+ *  stops requestAnimationFrame then, so the webview pauses its measurements
+ *  and reports the hidden time instead. */
+export type HiddenSample = { ts: number; ms: number };
+
 /** The webview's batch, sent to bun as one `perfReport` message every 2 s. */
 export type PerfReport = {
   longTasks: LongTaskSample[];
   renders: RenderSample[];
   clicks: ClickSample[];
   messages: MessageBucket;
+  /** Time the window spent hidden during this batch (0 if none). */
+  hiddenMs: number;
 };
 
 export type PerfSamples = {
@@ -79,6 +86,7 @@ export type PerfSamples = {
   renders: RenderSample[];
   clicks: ClickSample[];
   messages: MessageBucket[];
+  hidden: HiddenSample[];
 };
 
 /** Nearest-rank percentile; 0 for an empty series. */
@@ -152,11 +160,17 @@ export function formatPerfReport(
   const renders = recent(all.renders);
   const clicks = recent(all.clicks);
   const buckets = recent(all.messages);
+  const hiddenMs = recent(all.hidden).reduce((sum, h) => sum + h.ms, 0);
 
   const out: string[] = [];
   out.push(
     `Monad performance report — last ${Math.round(opts.windowMs / 60_000)} min${opts.header ? ` · ${opts.header}` : ""}`,
     "All durations in ms.",
+    ...(hiddenMs > 0
+      ? [
+          `Window hidden for ${(hiddenMs / 1000).toFixed(1)} s: webview stalls and clicks were not measured then.`,
+        ]
+      : []),
     "",
     `Bun event-loop lag: ${lags.length} events`,
   );

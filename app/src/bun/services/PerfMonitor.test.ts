@@ -115,6 +115,7 @@ describe("PerfMonitor", () => {
         windowMs: 2000,
         byType: { streamEvent: { count: 40, bytes: 4096 } },
       },
+      hiddenMs: 1500,
     });
     await perf.flush();
     expect(log()).toMatch(/webview long-task 240ms/);
@@ -123,6 +124,8 @@ describe("PerfMonitor", () => {
     expect(report).toMatch(/Settings\s+n=1\s+p50 420/);
     expect(report).toMatch(/Messages\s+1\s+35/);
     expect(report).toMatch(/streamEvent\s+20\.0\/s/);
+    expect(log()).toMatch(/webview hidden 1500ms/);
+    expect(report).toContain("Window hidden for 1.5 s");
   });
 
   test("switched off: nothing is measured or written, handlers still answer", async () => {

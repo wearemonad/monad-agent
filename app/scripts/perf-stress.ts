@@ -25,6 +25,9 @@ fs.rmSync(reportFile, { force: true });
 console.log(
   `perf:stress — ${threads} fake Threads, clicking for ${seconds}s (building and launching the dev app first)…`,
 );
+console.log(
+  "The Monad window stays on top during the run. Don't minimise it or switch Spaces: a hidden window can't be measured.",
+);
 
 const child = spawn("bun", ["run", "start"], {
   cwd: path.resolve(import.meta.dir, ".."),

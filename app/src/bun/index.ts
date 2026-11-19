@@ -3364,6 +3364,9 @@ const mainWindow = new BrowserWindow({
   // trafficLightOffset: { x: 6, y: 12 },
 });
 windowReady = true;
+// perf:stress measures paint, which WebKit stops in a hidden window (and
+// macOS naps a covered app): keep the window in front for the whole run.
+if (perfStressMs) mainWindow.setAlwaysOnTop(true);
 
 // Workaround for an Electrobun 1.x bug: the traffic light inset is ignored on
 // window creation, so the buttons sit flush with the top-left corner. Setting
