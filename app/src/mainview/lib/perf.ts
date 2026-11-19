@@ -179,9 +179,9 @@ export const perf = {
     checkTarget(); // already there (clicking the open Thread)
   },
 
-  /** An RPC answered; while a Thread click waits for its history, this is
-   *  the "time to RPC response" mark. */
-  noteRpcResponse(): void {
+  /** getSessionHistory answered: for a pending Thread click, this is the
+   *  "time to RPC response" mark. */
+  noteHistoryLoaded(): void {
     if (pending && pending.storeAt === undefined && pending.target === "thread") {
       pending.rpcAt = performance.now();
     }

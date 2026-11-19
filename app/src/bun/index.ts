@@ -495,7 +495,9 @@ function syncMemory(
         workspacePath,
         await sessions.listForIndex(workspacePath, workspaceId),
       );
-      void memoryIndex.backfillEmbeddings(workspacePath);
+      void perf.run("memory:embed", () =>
+        memoryIndex.backfillEmbeddings(workspacePath),
+      );
     } catch (e) {
       console.error(`[memory] sync failed: ${(e as Error).message}`);
     }
@@ -1127,8 +1129,12 @@ function systemPromptAppend(
   return parts.filter(Boolean).join("\n\n");
 }
 
+/** routeAgentEvent under a task label: a stalled stream names itself. */
+const routeLabelled = (event: AgentStreamEvent) =>
+  perf.run("stream:route", () => routeAgentEvent(event));
+
 const agent = new AgentService(
-  routeAgentEvent,
+  routeLabelled,
   broker,
   currentAuth,
   buildMcpServers,
@@ -1156,7 +1162,7 @@ const agent = new AgentService(
 );
 
 const codexAgent = new CodexAgentService(
-  routeAgentEvent,
+  routeLabelled,
   codexThreads,
   () => send()?.sessionsChanged({}),
   (workspaceId) => wsEnv.get(workspaceId),

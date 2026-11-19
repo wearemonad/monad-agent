@@ -51,6 +51,17 @@ describe("PerfMonitor", () => {
     expect(log()).toMatch(/lag \d+ms syncMemory/);
   });
 
+  test("cheap labelled work next to an unlabelled block takes no blame", async () => {
+    await sleep(30);
+    block(180); // nobody labelled this
+    perf.run("rpc:getSettings", () => block(1));
+    await perf.run("rpc:listSessions", async () => {});
+    await sleep(40);
+    await perf.flush();
+    expect(log()).toMatch(/lag \d+ms unlabelled/);
+    expect(log()).not.toMatch(/lag .*rpc:/);
+  });
+
   test("short work produces no lag event", async () => {
     await sleep(30);
     perf.run("loop:health", () => block(5));

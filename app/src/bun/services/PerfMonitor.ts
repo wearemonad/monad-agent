@@ -24,8 +24,10 @@ type Fn = (...args: any[]) => any;
  *    ticks is a lag event, named after the work that was running.
  *  - Task labels: `run(label, fn)` names a piece of work. A lag event is
  *    pinned on the labelled synchronous call that held the thread if there
- *    was one, else on labelled work that finished since the last tick (an
- *    async task's last continuation), else on whatever is still in flight.
+ *    was one, else on labelled async work that finished since the last tick
+ *    and ran long enough to be the culprit (its last continuation is the
+ *    usual blocker), else on whatever is still in flight. Short work that
+ *    merely happened nearby is never blamed.
  *  - RPC timing: `instrument(handlers)` times every request handler and
  *    sizes its response.
  *  - The webview's 2-second batches arrive through `ingest`.
@@ -49,8 +51,9 @@ export class PerfMonitor {
   private segments: [string, number][] = [];
   /** Labelled async work still running, with a count per label. */
   private inFlight = new Map<string, number>();
-  /** Labelled work that finished since the last tick. */
-  private endedSinceTick = new Set<string>();
+  /** Labelled async work that finished since the last tick: label → how
+   *  long it ran (ms). */
+  private endedSinceTick = new Map<string, number>();
 
   private samples: PerfSamples = {
     lags: [],
@@ -106,7 +109,6 @@ export class PerfMonitor {
       result = fn();
     } catch (e) {
       this.segment(label, t0);
-      this.endedSinceTick.add(label);
       throw e;
     }
     this.segment(label, t0);
@@ -116,11 +118,13 @@ export class PerfMonitor {
         const n = (this.inFlight.get(label) ?? 1) - 1;
         if (n > 0) this.inFlight.set(label, n);
         else this.inFlight.delete(label);
-        this.endedSinceTick.add(label);
+        const ran = performance.now() - t0;
+        this.endedSinceTick.set(
+          label,
+          Math.max(ran, this.endedSinceTick.get(label) ?? 0),
+        );
       };
       result.then(done, done);
-    } else {
-      this.endedSinceTick.add(label);
     }
     return result;
   }
@@ -232,8 +236,12 @@ export class PerfMonitor {
     for (const seg of this.segments) {
       if (!longest || seg[1] > longest[1]) longest = seg;
     }
-    if (longest && longest[1] >= this.thresholdMs / 2) return longest[0];
-    if (this.endedSinceTick.size) return [...this.endedSinceTick].join("+");
+    const culprit = this.thresholdMs / 2;
+    if (longest && longest[1] >= culprit) return longest[0];
+    const ended = [...this.endedSinceTick]
+      .filter(([, ran]) => ran >= culprit)
+      .sort((a, b) => b[1] - a[1]);
+    if (ended.length) return ended[0][0];
     if (this.inFlight.size) return [...this.inFlight.keys()].join("+");
     return "unlabelled";
   }

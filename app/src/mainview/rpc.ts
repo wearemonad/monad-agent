@@ -158,7 +158,7 @@ async function request<K extends keyof MonadRPC["bun"]["requests"]>(
 ): Promise<MonadRPC["bun"]["requests"][K]["response"]> {
   try {
     const res = await (electrobun.rpc as any).request[name](params);
-    perf.noteRpcResponse();
+    if (name === "getSessionHistory") perf.noteHistoryLoaded();
     return res;
   } catch (e) {
     // Most callers `void` these promises, so a transport/handler rejection
@@ -789,6 +789,8 @@ export async function refreshOllama() {
  *  A no-op in release builds — bun answers with no fake Threads. */
 async function runDevHarness(): Promise<void> {
   let harness: MonadRPC["bun"]["requests"]["devHarness"]["response"];
+  // Straight to the transport, not request(): an older bun without this
+  // handler must not raise the error toast in every dev session.
   try {
     harness = await (electrobun.rpc as any).request.devHarness({});
   } catch {

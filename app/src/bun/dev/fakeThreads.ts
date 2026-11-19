@@ -9,7 +9,7 @@ import { claudeProjectDir } from "../services/sessionFiles";
  *  getSessionHistory and the memory index treat them like any other Thread.
  *  Fixed ids make them easy to find again and remove. */
 
-export const MAX_FAKE_THREADS = 20;
+const MAX_FAKE_THREADS = 20;
 
 export const fakeSessionId = (i: number) =>
   `00000000-fa4e-4000-8000-${String(i + 1).padStart(12, "0")}`;
@@ -159,6 +159,3 @@ export function removeFakeThreads(cwd: string): void {
     fs.rmSync(fakeFile(cwd, i), { force: true });
   }
 }
-
-export const isFakeSessionId = (id: string) =>
-  id.startsWith("00000000-fa4e-4000-8000-");

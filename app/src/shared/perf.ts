@@ -4,7 +4,9 @@
  *  See internal/PARALLEL-THREADS-PR1-MEASURE.html. */
 
 /** Gaps above this between two heartbeat ticks count as a lag event (bun)
- *  or a long task (webview). */
+ *  or a long task (webview). The recorded duration is the whole gap, the
+ *  50 ms cadence included: a 150 ms event means ~100 ms of real blocking.
+ *  Both sides use the same rule, so their numbers compare directly. */
 export const LAG_THRESHOLD_MS = 100;
 /** Heartbeat cadence on both sides. */
 export const HEARTBEAT_MS = 50;
