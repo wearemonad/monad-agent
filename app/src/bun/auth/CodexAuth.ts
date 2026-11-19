@@ -102,7 +102,8 @@ export class CodexCli {
   /** `codex login status` without blocking the event loop: spawned async,
    *  a signed-in answer reused for STATUS_TTL_MS, and concurrent callers
    *  (several threads asking for images at once) share one spawn. */
-  statusAsync(): Promise<CodexAuthStatus> {
+  statusAsync({ fresh = false } = {}): Promise<CodexAuthStatus> {
+    if (fresh) this.forgetStatus();
     if (
       this.signedInStatus &&
       Date.now() - this.signedInAt < CodexCli.STATUS_TTL_MS

@@ -61,7 +61,7 @@ export class ForegroundGate {
   }
 
   /** Resolves once the app is idle, or after maxWaitMs regardless (default
-   *  10 minutes) so no job starves behind a long session. */
+   *  10 minutes) so no job starves behind a long stretch of use. */
   whenIdle({
     maxWaitMs = DEFAULT_MAX_WAIT_MS,
   }: {

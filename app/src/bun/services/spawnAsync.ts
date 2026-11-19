@@ -57,10 +57,6 @@ export class CommandFailed extends Error {
     const detail = result.stderr.trim().split("\n").slice(-3).join(" ");
     super(`${cmd[0]} ${why}${detail ? `: ${detail}` : ""}`);
   }
-  /** Mirrors execFileSync's error shape, which callers used to inspect. */
-  get status(): number | null {
-    return this.result.code;
-  }
 }
 
 /** run(), but a non-zero exit throws CommandFailed — the execFileSync

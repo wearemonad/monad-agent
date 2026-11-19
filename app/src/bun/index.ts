@@ -37,7 +37,7 @@ import { SessionStore } from "./services/SessionStore";
 import { CONFIG_DIR, WorkspaceManager } from "./services/WorkspaceManager";
 import { SettingsStore } from "./services/SettingsStore";
 import { Keychain, KeychainServices } from "./services/Keychain";
-import { run, runChecked } from "./services/spawnAsync";
+import { run as runCommand, runChecked } from "./services/spawnAsync";
 import { AgentSessions } from "./services/AgentSession";
 import { GoogleDriveService } from "./services/GoogleDriveService";
 import { GoogleOAuth } from "./services/GoogleOAuth";
@@ -267,9 +267,14 @@ function workspaceKeychainServices(workspaceId: string): string[] {
 // Every secret the app reads, loaded in parallel before anything can ask:
 // the getters answer from this cache, so no `security` spawn ever waits on
 // bun's main thread (PARALLEL-THREADS-PR2, 2c).
-await Keychain.prefetch([
-  ...SettingsStore.keychainServices(),
-  ...workspaces.list().flatMap((ws) => workspaceKeychainServices(ws.id)),
+// Capped: a locked keychain must not hold up launch — items still loading
+// read as unset until they land.
+await Promise.race([
+  Keychain.prefetch([
+    ...SettingsStore.keychainServices(),
+    ...workspaces.list().flatMap((ws) => workspaceKeychainServices(ws.id)),
+  ]),
+  Bun.sleep(1_500),
 ]);
 
 const ollama = new OllamaService();
@@ -1848,6 +1853,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
               workspaceId: ws.id,
               workspacePath: ws.path,
               promptSnippet: prompt.slice(0, 80),
+              sessionId: resumeSessionId,
             });
             foreground.turnStarted(runId);
             return { runId };
@@ -1884,6 +1890,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
             workspaceId: ws.id,
             workspacePath: ws.path,
             promptSnippet: prompt.replace(/\s+/g, " ").trim().slice(0, 80),
+            sessionId: resumeSessionId,
           });
           foreground.turnStarted(runId);
           return { runId };
@@ -2224,8 +2231,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
               return { ok: true, message: "OpenAI API key configured." };
             }
             const found = `Codex CLI found: ${codexCli.resolveBinary()}`;
-            codexCli.forgetStatus();
-            const status = await codexCli.statusAsync();
+            const status = await codexCli.statusAsync({ fresh: true });
             if (status.loggedIn) {
               return {
                 ok: true,
@@ -2275,8 +2281,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         try {
           await runCodexLogin(codexCli.resolveBinary());
           scheduleHealthRecheck();
-          codexCli.forgetStatus();
-          const status = await codexCli.statusAsync();
+          const status = await codexCli.statusAsync({ fresh: true });
           return status.loggedIn
             ? { ok: true, status }
             : { ok: false, status, error: "Sign-in didn't complete." };
@@ -3235,7 +3240,9 @@ async function runExportDiagnostics(): Promise<{
     if (v.resolvedClaudePath) {
       try {
         claudeCliVersion = (
-          await run([v.resolvedClaudePath, "--version"], { timeout: 5_000 })
+          await runCommand([v.resolvedClaudePath, "--version"], {
+            timeout: 5_000,
+          })
         ).stdout.trim();
       } catch {
         // unknown — the path alone still helps

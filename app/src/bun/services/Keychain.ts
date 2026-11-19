@@ -33,6 +33,10 @@ function hasControlChars(value: string): boolean {
 const cache = new Map<string, string | null>();
 /** Reads in flight, so concurrent loads of one item share a spawn. */
 const pending = new Map<string, Promise<string | null>>();
+/** When a read last failed (locked keychain, denied access): get() waits
+ *  this long before trying again, rather than spawning on every call. */
+const failedAt = new Map<string, number>();
+const RETRY_FAILED_READ_MS = 30_000;
 
 async function readItem(service: string): Promise<string | null> {
   const res = await run(
@@ -49,10 +53,12 @@ async function readItem(service: string): Promise<string | null> {
   // locked, access denied) — log it so we don't mistakenly tell the user to
   // configure a credential they already set.
   if (res.code === 44) cache.set(service, null);
-  else
+  else {
+    failedAt.set(service, Date.now());
     console.warn(
       `[keychain] read failed for "${service}" (exit ${res.code ?? "killed"})`,
     );
+  }
   return null;
 }
 
@@ -88,7 +94,9 @@ export const Keychain = {
   get(service: string): string | null {
     const known = cache.get(service);
     if (known !== undefined) return known;
-    void Keychain.load(service);
+    const failed = failedAt.get(service);
+    if (failed === undefined || Date.now() - failed > RETRY_FAILED_READ_MS)
+      void Keychain.load(service);
     return null;
   },
 
@@ -100,6 +108,7 @@ export const Keychain = {
     if (!p) {
       p = readItem(service)
         .catch((e) => {
+          failedAt.set(service, Date.now());
           console.warn(
             `[keychain] read failed for "${service}": ${(e as Error).message}`,
           );
