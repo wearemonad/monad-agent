@@ -374,6 +374,11 @@ export class CodexAgentService {
     return runId;
   }
 
+  /** Whether this run is still in flight. */
+  isTurnActive(runId: string): boolean {
+    return this.runs.has(runId);
+  }
+
   abortRun(runId: string): boolean {
     const run = this.runs.get(runId);
     if (!run) return false;

@@ -539,6 +539,14 @@ export class AgentService {
     }
   }
 
+  /** Whether this interactive Turn is still running (fake, or the current
+   *  Turn of a live session). */
+  isTurnActive(runId: string): boolean {
+    if (this.fakeRuns.has(runId)) return true;
+    for (const s of this.live.values()) if (s.turnRunId === runId) return true;
+    return false;
+  }
+
   abortRun(runId: string): boolean {
     const fake = this.fakeRuns.get(runId);
     if (fake) {

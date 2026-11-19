@@ -24,6 +24,8 @@ export const LAUNCH_BUSY_MS = 60_000;
 export const THREAD_OPEN_BUSY_MS = 2_000;
 /** Quiet time needed before the app counts as idle. */
 export const IDLE_AFTER_MS = 5_000;
+/** While a Turn streams, how often parked jobs re-check it is still live. */
+export const LIVENESS_CHECK_MS = 30_000;
 /** Longest a gated job waits for idle before it runs anyway. */
 export const DEFAULT_MAX_WAIT_MS = 10 * 60_000;
 
@@ -32,8 +34,20 @@ export class ForegroundGate {
   /** The moment the latest busy reason ended (or will end). */
   private busyUntil: number;
 
-  constructor(opts: { clock?: GateClock; launchedAt?: number } = {}) {
+  /** Whether the agent services still run this Turn. A Turn that ends
+   *  without a finished/error event would otherwise keep the app "busy"
+   *  for good; one the probe disowns counts as ended. */
+  private readonly isTurnLive: (runId: string) => boolean;
+
+  constructor(
+    opts: {
+      clock?: GateClock;
+      launchedAt?: number;
+      isTurnLive?: (runId: string) => boolean;
+    } = {},
+  ) {
     this.clock = opts.clock ?? realClock;
+    this.isTurnLive = opts.isTurnLive ?? (() => true);
     this.busyUntil = (opts.launchedAt ?? this.clock.now()) + LAUNCH_BUSY_MS;
   }
 
@@ -75,14 +89,26 @@ export class ForegroundGate {
   }
 
   isBusy(): boolean {
+    this.dropDeadTurns();
     return this.streaming.size > 0 || this.clock.now() < this.busyUntil;
   }
 
   isIdle(): boolean {
+    this.dropDeadTurns();
     return (
       this.streaming.size === 0 &&
       this.clock.now() >= this.busyUntil + IDLE_AFTER_MS
     );
+  }
+
+  private dropDeadTurns(): void {
+    let dropped = false;
+    for (const runId of this.streaming) {
+      if (this.isTurnLive(runId)) continue;
+      this.streaming.delete(runId);
+      dropped = true;
+    }
+    if (dropped && this.streaming.size === 0) this.extendBusy(this.clock.now());
   }
 
   private extendBusy(until: number): void {
@@ -107,8 +133,12 @@ export class ForegroundGate {
     this.waiters = waiting;
     if (waiting.length === 0) return;
     let next = Math.min(...waiting.map((w) => w.deadline));
-    if (this.streaming.size === 0)
-      next = Math.min(next, this.busyUntil + IDLE_AFTER_MS);
+    next =
+      this.streaming.size === 0
+        ? Math.min(next, this.busyUntil + IDLE_AFTER_MS)
+        : // A Turn normally ends with an event; check now and then that
+          // it hasn't died silently.
+          Math.min(next, now + LIVENESS_CHECK_MS);
     this.timer = this.clock.setTimeout(
       () => {
         this.timer = null;

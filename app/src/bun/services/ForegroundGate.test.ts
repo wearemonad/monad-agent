@@ -127,4 +127,26 @@ describe("ForegroundGate", () => {
     await Promise.resolve();
     expect(released).toBe(true);
   });
+
+  test("a Turn its agent no longer runs stops counting as busy", async () => {
+    const { clock, advance } = fakeClock();
+    const live = new Set(["run-a"]);
+    const gate = new ForegroundGate({
+      clock,
+      launchedAt: -10 * 60 * SEC,
+      isTurnLive: (runId) => live.has(runId),
+    });
+    gate.turnStarted("run-a");
+    let released = false;
+    void gate.whenIdle().then(() => {
+      released = true;
+    });
+    await advance(60 * SEC);
+    expect(gate.isBusy()).toBe(true);
+    live.delete("run-a"); // died without a finished/error event
+    await advance(30 * SEC); // noticed on the next liveness check
+    expect(gate.isBusy()).toBe(false);
+    await advance(5 * SEC);
+    expect(released).toBe(true);
+  });
 });

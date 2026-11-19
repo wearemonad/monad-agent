@@ -2,7 +2,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
 import type { AuthMode } from "../../shared/ipc";
-import { findOnPath } from "../services/shellPath";
+import { findOnPath, shellPathPending } from "../services/shellPath";
 
 export interface AuthStrategy {
   id: AuthMode;
@@ -25,7 +25,11 @@ export class SubscriptionCliAuth implements AuthStrategy {
   id = "subscription-cli" as const;
   private binaryPath: string | null = null;
 
-  constructor(private getOverridePath?: () => string | undefined) {}
+  constructor(
+    private getOverridePath?: () => string | undefined,
+    /** The login-shell PATH probe while it runs (injectable for tests). */
+    private pathPending: () => Promise<void> | null = shellPathPending,
+  ) {}
 
   /** Drop the memoized path so the next resolve looks at the disk again —
    *  a re-check must be able to see a CLI that moved, vanished, or appeared. */
@@ -46,10 +50,10 @@ export class SubscriptionCliAuth implements AuthStrategy {
     if (this.binaryPath) return this.binaryPath;
     const candidates = [
       process.env.MONAD_CLAUDE_BIN,
-      path.join(os.homedir(), ".local/bin/claude"),
+      path.join(process.env.HOME || os.homedir(), ".local/bin/claude"),
       "/opt/homebrew/bin/claude",
       "/usr/local/bin/claude",
-      path.join(os.homedir(), ".claude/local/claude"),
+      path.join(process.env.HOME || os.homedir(), ".claude/local/claude"),
     ].filter(Boolean) as string[];
     for (const c of candidates) {
       if (fs.existsSync(c)) {
@@ -70,8 +74,17 @@ export class SubscriptionCliAuth implements AuthStrategy {
     );
   }
 
+  /** Before the login shell's PATH has been merged (the first seconds after
+   *  a Finder launch), "not found" may only mean "not yet" — an nvm or asdf
+   *  install lives on that PATH. The run itself waits for the PATH before
+   *  sdkOptions() resolves again, so defer the verdict to it. */
   validate(): void {
-    this.resolveBinary();
+    try {
+      this.resolveBinary();
+    } catch (e) {
+      if (!this.getOverridePath?.() && this.pathPending()) return;
+      throw e;
+    }
   }
 
   sdkOptions() {

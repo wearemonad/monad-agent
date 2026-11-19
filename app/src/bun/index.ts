@@ -217,7 +217,12 @@ perf.start();
 // Holds background work (memory sync, Drive/Gmail sync, folder polls,
 // catch-up jobs…) back while the user is streaming or just opened a Thread,
 // and for the first minute after launch (PARALLEL-THREADS-PR2, 2d).
-const foreground = new ForegroundGate();
+const foreground = new ForegroundGate({
+  // Lazy: the agent services are built further down. A Turn they no longer
+  // run stops holding background work back even if its end event was lost.
+  isTurnLive: (runId) =>
+    agent.isTurnActive(runId) || codexAgent.isTurnActive(runId),
+});
 
 // Fake-stream harness, dev builds only: MONAD_FAKE_AGENT=N seeds N fake
 // Threads (~40 messages each) and serves interactive runs with a
