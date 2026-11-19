@@ -173,6 +173,8 @@ echo "▶ Building Monad v${VERSION} (${CHANNEL})…"
 # Hutch devkit (.hutch/devkit), projected by sync. Hash-verified; a no-op when
 # already current.
 bunx electrobun sync
+# Re-apply the preload patches sync just overwrote (see the script).
+bun scripts/patch-electrobun.ts
 bunx vite build
 bunx electrobun build --env="$CHANNEL"
 
