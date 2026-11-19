@@ -156,6 +156,12 @@ import {
 import { backgroundLoops, type LoopSpec } from "./runtime/BackgroundLoops";
 import { BackgroundRuns } from "./services/BackgroundRuns";
 import { schedulerLoops } from "./services/SchedulerLoop";
+import { PerfMonitor } from "./services/PerfMonitor";
+import {
+  appendFakeTurn,
+  removeFakeThreads,
+  seedFakeThreads,
+} from "./dev/fakeThreads";
 
 // Before anything else: GUI-launched apps get launchd's bare PATH, which hides
 // npx/uvx/docker from Bun.which, connector health checks, and every MCP server
@@ -194,6 +200,33 @@ const localInfo = await Updater.getLocalInfo();
 console.info(
   `[app] Monad v${localInfo.version || "dev"} (${localInfo.channel || "dev"}) launched — pid ${process.pid}, Darwin ${os.release()}, TZ ${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
 );
+const isDevBuild = (localInfo.channel || "dev") === "dev";
+
+// Performance diagnostics (internal/PARALLEL-THREADS-PR1-MEASURE.html):
+// event-loop lag, RPC timing and the webview's batches → perf.log. On by
+// default in dev builds; Settings → Advanced switches it in release builds.
+const perf = new PerfMonitor({
+  logFile: path.join(LOG_DIR, "perf.log"),
+  enabled: settings.perfDiagnostics ?? isDevBuild,
+});
+perf.start();
+
+// Fake-stream harness, dev builds only: MONAD_FAKE_AGENT=N seeds N fake
+// Threads (~40 messages each) and serves interactive runs with a
+// FakeAgentSession; MONAD_PERF_STRESS=<seconds> also has the webview click
+// between Threads and Settings for that long (bun run perf:stress).
+const fakeAgentThreads = isDevBuild
+  ? Math.max(0, Number(process.env.MONAD_FAKE_AGENT) || 0)
+  : 0;
+const perfStressMs = isDevBuild
+  ? Math.max(0, Number(process.env.MONAD_PERF_STRESS) || 0) * 1000
+  : 0;
+if (fakeAgentThreads) {
+  console.info(
+    `[perf] fake agent on: ${fakeAgentThreads} streaming Threads${perfStressMs ? `, stress run ${perfStressMs / 1000}s` : ""}`,
+  );
+}
+
 Updater.onStatusChange((entry) => {
   // Electrobun words this status with build hashes ("Update available:
   // 14a2shhb → o96s7fsf"); by the time it's emitted checkForUpdate() has
@@ -451,20 +484,22 @@ const memoryIndex = new MemoryIndexService(embedder);
 /** Freshen a workspace's memory index — incremental (mtime-stamped), so it's
  *  cheap when nothing changed. Failures degrade recall, never break callers.
  *  Embedding backfill runs detached: search works keyword-only meanwhile. */
-async function syncMemory(
+function syncMemory(
   workspaceId: string,
   workspacePath: string,
 ): Promise<void> {
-  try {
-    memoryIndex.syncKnowledge(workspacePath);
-    memoryIndex.syncSessions(
-      workspacePath,
-      await sessions.listForIndex(workspacePath, workspaceId),
-    );
-    void memoryIndex.backfillEmbeddings(workspacePath);
-  } catch (e) {
-    console.error(`[memory] sync failed: ${(e as Error).message}`);
-  }
+  return perf.run("syncMemory", async () => {
+    try {
+      memoryIndex.syncKnowledge(workspacePath);
+      memoryIndex.syncSessions(
+        workspacePath,
+        await sessions.listForIndex(workspacePath, workspaceId),
+      );
+      void memoryIndex.backfillEmbeddings(workspacePath);
+    } catch (e) {
+      console.error(`[memory] sync failed: ${(e as Error).message}`);
+    }
+  });
 }
 
 /** Workspace-scoped MCP config: the workspace's own .mcp.json (with ${VAR}
@@ -772,7 +807,7 @@ function captureInteractiveRun(
   if (!sessionId) return;
   // OpenAI threads have no Claude session JSONL to condense.
   if (codexThreads.has(ctx.workspacePath, sessionId)) return;
-  setTimeout(async () => {
+  const capture = async () => {
     try {
       const jsonl = fs.readFileSync(
         sessionFilePath(ctx.workspacePath, sessionId),
@@ -797,7 +832,8 @@ function captureInteractiveRun(
     } catch (e) {
       console.error(`[memory] capture failed: ${(e as Error).message}`);
     }
-  }, 2_000);
+  };
+  setTimeout(() => perf.run("captureInteractiveRun", capture), 2_000);
 }
 
 /** Every MEMORY_REVIEW_INTERVAL interactive runs, a hidden background run
@@ -1108,6 +1144,14 @@ const agent = new AgentService(
   {
     backgroundRuns,
     sessions: appRuntime.runSync(Effect.service(AgentSessions)),
+    ...(fakeAgentThreads
+      ? {
+          fake: {
+            onStep: (workspaceId, workspacePath, sessionId, answer) =>
+              appendFakeTurn(workspacePath, workspaceId, sessionId, answer),
+          },
+        }
+      : {}),
   },
 );
 
@@ -1700,10 +1744,21 @@ function pollWatchFolders() {
   }
 }
 
+/** Request handlers as Electrobun calls them — spelled out so that
+ *  perf.instrument (which wraps each one) still types every handler. */
+type BunRequestHandlers = {
+  [K in keyof MonadRPC["bun"]["requests"]]: (
+    params: MonadRPC["bun"]["requests"][K]["params"],
+  ) =>
+    | MonadRPC["bun"]["requests"][K]["response"]
+    | Promise<MonadRPC["bun"]["requests"][K]["response"]>;
+};
+
 const rpc = BrowserView.defineRPC<MonadRPC>({
   maxRequestTime: 300_000, // pickFolder waits on a human in a native dialog
   handlers: {
-    requests: {
+    // Every handler timed, sized and labelled rpc:<method> (PerfMonitor).
+    requests: perf.instrument<BunRequestHandlers>({
       startRun: ({
         prompt,
         runId: clientRunId,
@@ -1714,6 +1769,23 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
       }) => {
         try {
           const ws = activeWs();
+          if (fakeAgentThreads) {
+            // Fake harness: every interactive run is a FakeAgentSession,
+            // whatever model the composer has picked.
+            const runId = agent.startRun({
+              workspaceId: ws.id,
+              workspacePath: ws.path,
+              prompt,
+              runId: clientRunId,
+              resumeSessionId,
+            });
+            interactiveRuns.set(runId, {
+              workspaceId: ws.id,
+              workspacePath: ws.path,
+              promptSnippet: prompt.slice(0, 80),
+            });
+            return { runId };
+          }
           const id = provider ?? settings.authMode;
           checkThreadRuntime(ws.path, resumeSessionId, id);
           if (isOpenAIProvider(id) && !settings.isProviderEnabled(id)) {
@@ -2064,6 +2136,9 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
       },
       updateSettings: (patch) => {
         settings.update(patch);
+        if (patch.perfDiagnostics !== undefined) {
+          perf.setEnabled(patch.perfDiagnostics);
+        }
         scheduleHealthRecheck();
         return settingsView();
       },
@@ -2917,7 +2992,38 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         pushWorkspaces();
         return { ok: true };
       },
-    },
+      getPerfReport: () => ({ text: perf.report(perfReportHeader()) }),
+      devHarness: () => {
+        const ws = activeWs();
+        if (!fakeAgentThreads) {
+          // Leftovers of a harness run that didn't quit cleanly.
+          if (isDevBuild) removeFakeThreads(ws.path);
+          return { fakeSessionIds: [] };
+        }
+        return {
+          fakeSessionIds: seedFakeThreads(ws.path, ws.id, fakeAgentThreads),
+          ...(perfStressMs
+            ? { stress: { durationMs: perfStressMs, everyMs: 2_000 } }
+            : {}),
+        };
+      },
+      perfStressDone: () => {
+        if (!perfStressMs) return { ok: false };
+        // Give the webview's final batch a moment to land, then print the
+        // report between markers perf-stress.ts looks for, and quit.
+        setTimeout(() => {
+          const text = perf.report(perfReportHeader());
+          try {
+            fs.writeFileSync(path.join(LOG_DIR, "perf-stress.txt"), text);
+          } catch {
+            // the console copy below still reaches perf-stress.ts
+          }
+          console.log(`\n=== MONAD PERF REPORT ===\n${text}\n=== END PERF REPORT ===`);
+          void perf.flush().then(() => Utils.quit());
+        }, 2_500);
+        return { ok: true };
+      },
+    }),
     messages: {
       // Webview console output → the dev terminal and the app log (Electrobun
       // has no usable inspector for the WKWebView — see the View menu).
@@ -2927,6 +3033,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         else if (level === "warn") console.warn(line);
         else console.log(line);
       },
+      perfReport: (report) => perf.ingest(report),
     },
   },
 });
@@ -2971,7 +3078,14 @@ function settingsView() {
     hasGoogleClientSecret: !!settings.getGoogleClientSecret(),
     googleClientBuiltIn: settings.hasBuiltInGoogleClient(),
     images: imageSettingsView(),
+    perfDiagnostics: perf.isEnabled,
   };
+}
+
+/** First line of the copied performance report: enough to tell builds and
+ *  machines apart in an issue. */
+function perfReportHeader(): string {
+  return `v${localInfo.version || "dev"} (${localInfo.channel || "dev"}) · ${macosVersion} · ${os.cpus()[0]?.model ?? "unknown CPU"}`;
 }
 
 function imageSettingsView() {
@@ -3376,6 +3490,14 @@ async function autoCheckForUpdate() {
 // overlapping itself; a failed run is logged as `[name] run failed: …` and
 // the loop carries on.
 function backgroundLoopSpecs(): LoopSpec[] {
+  // Each run labelled loop:<name>, so lag it causes names the loop.
+  return rawLoopSpecs().map((spec) => ({
+    ...spec,
+    run: (signal) => perf.run(`loop:${spec.name}`, () => spec.run(signal)),
+  }));
+}
+
+function rawLoopSpecs(): LoopSpec[] {
   return [
     // Scheduled jobs: a check 15 s after launch then every minute (abandoned
     // if wedged), and the 30-minute "alive" line. Lazy: the runtime — and so
@@ -3449,7 +3571,10 @@ function backgroundLoopSpecs(): LoopSpec[] {
 // Quit: veto the first before-quit, dispose the runtime (bounded), then quit
 // for real. See createQuitGuard for what this can and can't guarantee.
 const quitGuard = createQuitGuard({
-  dispose: () => appRuntime.dispose(),
+  dispose: async () => {
+    await Promise.all([appRuntime.dispose(), perf.stop()]);
+    if (fakeAgentThreads) removeFakeThreads(activeWs().path);
+  },
   quit: () => Utils.quit(),
   timeoutMs: 3_000,
 });

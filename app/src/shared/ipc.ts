@@ -2,6 +2,7 @@
 // The webview never sees raw SDK message types — only these.
 
 import type { ImageProviderId, ImageSource } from "./images";
+import type { PerfReport } from "./perf";
 import type { GraphBackfillStatus, KnowledgeGraphView } from "./knowledgeGraph";
 
 export type AgentStreamEvent =
@@ -509,6 +510,9 @@ export type SettingsView = {
   googleClientBuiltIn: boolean;
   /** Settings → Image models. */
   images: ImageSettingsView;
+  /** Settings → Advanced → Performance diagnostics: lag/click-to-paint
+   *  logging to perf.log. On by default in dev builds. */
+  perfDiagnostics: boolean;
 };
 
 /** Settings → Image models: which providers have a key (never the key
@@ -734,9 +738,25 @@ export type MonadRPC = {
           imageApiKeys?: Partial<Record<ImageProviderId, string | null>>;
           imageDefaultProvider?: ImageProviderId | null;
           imageModels?: Partial<Record<ImageProviderId, string | null>>;
+          perfDiagnostics?: boolean;
         };
         response: SettingsView;
       };
+      /** Plain-text summary of the last 15 minutes of performance samples
+       *  (Settings → Advanced → Copy performance report). */
+      getPerfReport: { params: {}; response: { text: string } };
+      /** Dev builds: what the fake-stream harness wants the webview to do —
+       *  start a run in each fake Thread, then (perf:stress) click between
+       *  Threads and Settings. Empty in release builds. */
+      devHarness: {
+        params: {};
+        response: {
+          fakeSessionIds: string[];
+          stress?: { durationMs: number; everyMs: number };
+        };
+      };
+      /** perf:stress finished clicking: print the report and quit. */
+      perfStressDone: { params: {}; response: { ok: boolean } };
       /** Readiness of one provider (defaults to the app's default provider). */
       testAuth: {
         params: { provider?: ProviderId };
@@ -1103,6 +1123,8 @@ export type MonadRPC = {
        *  terminal — Electrobun has no working inspector for the native
        *  WKWebView (no isInspectable; the docked one crashes on close). */
       webviewLog: { level: WebviewLogLevel; text: string };
+      /** Webview performance samples, batched every 2 s (diagnostics on). */
+      perfReport: PerfReport;
     };
   };
   webview: {

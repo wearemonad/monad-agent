@@ -10,12 +10,37 @@ import { choiceKey, controlsFor, resolveRunOptions } from "./lib/models";
 import { bytesToBase64 } from "./util";
 import { forwardConsole } from "./lib/consoleForward";
 import { zoomIn, zoomOut, zoomReset } from "./lib/zoom";
+import { perf } from "./lib/perf";
+
+type WebviewMessageHandlers = {
+  [K in keyof MonadRPC["webview"]["messages"]]: (
+    payload: MonadRPC["webview"]["messages"][K],
+  ) => void;
+};
+
+/** Count every incoming message by type (stream events by kind) for the
+ *  performance diagnostics — the bursts after a bun stall show up here. */
+function counted<T extends Record<string, (payload: any) => void>>(
+  handlers: T,
+): T {
+  const out: Record<string, (payload: any) => void> = {};
+  for (const [type, handler] of Object.entries(handlers)) {
+    out[type] = (payload) => {
+      perf.countMessage(
+        type === "streamEvent" ? `streamEvent:${payload?.kind}` : type,
+        payload,
+      );
+      handler(payload);
+    };
+  }
+  return out as T;
+}
 
 const rpc = Electroview.defineRPC<MonadRPC>({
   maxRequestTime: 300_000,
   handlers: {
     requests: {},
-    messages: {
+    messages: counted<WebviewMessageHandlers>({
       streamEvent: (event) => {
         useStore.getState().applyEvent(event);
         // runs move inbox files, write outbox drafts, and create sessions —
@@ -73,7 +98,7 @@ const rpc = Electroview.defineRPC<MonadRPC>({
           void api.getSettings();
         }
       },
-    },
+    }),
   },
 });
 
@@ -83,6 +108,10 @@ const electrobun = new Electrobun.Electroview({ rpc });
 // reliable channel on Electrobun (see consoleForward.ts for why).
 forwardConsole((level, text) => {
   (electrobun.rpc as any)?.send?.webviewLog?.({ level, text });
+});
+
+perf.init((report) => {
+  (electrobun.rpc as any)?.send?.perfReport?.(report);
 });
 
 // Pre-warm: opening a thread (fresh or resumed) boots its agent session in
@@ -128,7 +157,9 @@ async function request<K extends keyof MonadRPC["bun"]["requests"]>(
   params: MonadRPC["bun"]["requests"][K]["params"],
 ): Promise<MonadRPC["bun"]["requests"][K]["response"]> {
   try {
-    return await (electrobun.rpc as any).request[name](params);
+    const res = await (electrobun.rpc as any).request[name](params);
+    perf.noteRpcResponse();
+    return res;
   } catch (e) {
     // Most callers `void` these promises, so a transport/handler rejection
     // (ENOENT, a thrown handler) would otherwise vanish with only a console
@@ -389,6 +420,11 @@ export const api = {
   async revealLogs() {
     return request("revealLogs", {});
   },
+  /** Settings → Advanced → Copy performance report. */
+  async perfReport() {
+    return (await request("getPerfReport", {})).text;
+  },
+
   async exportDiagnostics() {
     return request("exportDiagnostics", {});
   },
@@ -746,3 +782,49 @@ export async function refreshOllama() {
   useStore.getState().setOllama(status);
   return status;
 }
+
+/** Dev builds with MONAD_FAKE_AGENT: start a run in every fake Thread, and
+ *  for `bun run perf:stress` click between Threads and Settings every
+ *  `everyMs` (the automation hook), then hand over to bun for the report.
+ *  A no-op in release builds — bun answers with no fake Threads. */
+async function runDevHarness(): Promise<void> {
+  let harness: MonadRPC["bun"]["requests"]["devHarness"]["response"];
+  try {
+    harness = await (electrobun.rpc as any).request.devHarness({});
+  } catch {
+    return;
+  }
+  const ids = harness.fakeSessionIds;
+  if (!ids.length) return;
+  await refreshSidebar();
+  for (const sessionId of ids) {
+    useStore.getState().setSettingsOpen(false);
+    await api.openSession(sessionId);
+    await api.startRun("Keep streaming — fake agent run.");
+  }
+  const stress = harness.stress;
+  if (!stress) return;
+  const end = Date.now() + stress.durationMs;
+  let n = 0;
+  const step = async () => {
+    if (Date.now() >= end) {
+      perf.flushNow();
+      await request("perfStressDone", {});
+      return;
+    }
+    if (n % 2 === 0) {
+      const sessionId = ids[(n / 2) % ids.length];
+      perf.markClick("thread", sessionId);
+      useStore.getState().setSettingsOpen(false);
+      await api.openSession(sessionId);
+    } else {
+      perf.markClick("settings");
+      useStore.getState().setSettingsOpen(true);
+    }
+    n++;
+    setTimeout(() => void step(), stress.everyMs);
+  };
+  setTimeout(() => void step(), stress.everyMs);
+}
+// After the first sidebar load has settled.
+setTimeout(() => void runDevHarness(), 3_000);

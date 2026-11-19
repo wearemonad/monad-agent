@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AlertTriangle, Loader2, RefreshCw, X } from "lucide-react";
 import { useStore } from "../store";
+import { perf } from "../lib/perf";
 import { api } from "../rpc";
 import { Button } from "@/components/ui/button";
 import {
@@ -119,6 +120,7 @@ export function HealthBanner() {
             Re-run checks
           </Button>
           <Button
+            onPointerDown={() => perf.markClick("settings")}
             onClick={() => {
               useStore.getState().setSettingsOpen(true);
             }}

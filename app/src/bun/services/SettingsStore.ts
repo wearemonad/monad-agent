@@ -27,6 +27,9 @@ type SettingsFile = {
   imageDefaultProvider?: ImageProviderId;
   /** Per-provider image model override (DEFAULT_IMAGE_MODELS otherwise). */
   imageModels?: Partial<Record<ImageProviderId, string>>;
+  /** Settings → Advanced → Performance diagnostics; unset = the build's
+   *  default (on in dev, off in release). */
+  perfDiagnostics?: boolean;
 };
 
 const CONFIG_DIR = path.join(os.homedir(), "Library/Application Support/Monad");
@@ -63,6 +66,10 @@ export class SettingsStore {
 
   get codexBinaryPath(): string | undefined {
     return this.data.codexBinaryPath;
+  }
+
+  get perfDiagnostics(): boolean | undefined {
+    return this.data.perfDiagnostics;
   }
 
   get localModel(): string | undefined {
@@ -139,6 +146,7 @@ export class SettingsStore {
     imageDefaultProvider?: ImageProviderId | null;
     /** "" or null resets a provider to its default model. */
     imageModels?: Partial<Record<ImageProviderId, string | null>>;
+    perfDiagnostics?: boolean;
   }): void {
     // Keychain writes FIRST: a denied/locked keychain prompt throws, and it
     // must do so before any in-memory mutation — otherwise the unrelated
@@ -221,6 +229,9 @@ export class SettingsStore {
     }
     if (patch.googleClientId !== undefined) {
       this.data.googleClientId = patch.googleClientId || undefined;
+    }
+    if (patch.perfDiagnostics !== undefined) {
+      this.data.perfDiagnostics = patch.perfDiagnostics;
     }
     this.save();
   }

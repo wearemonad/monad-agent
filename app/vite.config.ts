@@ -10,6 +10,10 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: "@", replacement: path.resolve(__dirname, "src/mainview") },
+      // React's profiling build, so <Profiler onRender> reports render cost
+      // in built apps too (the plain production build makes it a no-op).
+      // Same API; the cost is a timestamp per rendered component.
+      { find: /^react-dom\/client$/, replacement: "react-dom/profiling" },
       // electrobun/view resolves into the Hutch devkit (Electrobun 2's npm
       // package deliberately exports only an error).
       ...electrobunViteAliases(path.resolve(__dirname, ".hutch/devkit")),

@@ -29,6 +29,7 @@ import {
   sectionStatus,
 } from "../threadGroups";
 import { api } from "../rpc";
+import { perf } from "../lib/perf";
 import { relativeTime } from "../util";
 import { cn } from "@/lib/utils";
 import { OutboxPanel } from "./OutboxPanel";
@@ -114,6 +115,7 @@ export function Sidebar({
                 variant="secondary"
                 className="flex-1"
                 title="Settings"
+                onPointerDown={() => perf.markClick("settings")}
                 onClick={() => useStore.getState().setSettingsOpen(true)}
               >
                 <Settings className="size-3.5" /> Settings
@@ -446,6 +448,9 @@ function ThreadList() {
                     type="button"
                     key={h.sessionId}
                     className="w-full rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-muted/50"
+                    onPointerDown={() =>
+                      perf.markClick("thread", h.sessionId)
+                    }
                     onClick={() => {
                       // Carry the query into the conversation so ChatPane can
                       // highlight and scroll to the matches. (Raw store value:
@@ -703,6 +708,7 @@ function ThreadRow({
         type="button"
         className="flex items-baseline min-w-0 flex-1 text-left before:absolute before:inset-0"
         title={kindTooltip(thread)}
+        onPointerDown={() => perf.markClick("thread", thread.sessionId)}
         onClick={() => {
           // A plain thread open is not a search jump — drop any leftover term.
           useStore.getState().setHighlightTerm(null);

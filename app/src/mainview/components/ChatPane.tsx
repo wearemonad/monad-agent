@@ -2,6 +2,7 @@
  *  no button here can default to submitting one — they are all click targets. */
 import {
   memo,
+  Profiler,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -33,6 +34,7 @@ import { ThinkingOrb, type OrbState } from "thinking-orbs";
 import type { ChatItem, SkillInfo } from "../../shared/ipc";
 import { useStore } from "../store";
 import { api } from "../rpc";
+import { perf } from "../lib/perf";
 import { useSmoothText } from "../lib/smoothText";
 import { ActivityGroup, type ActivityItem } from "./ToolCallCard";
 import { ARTIFACT_ICONS } from "./ArtifactPanel";
@@ -89,7 +91,9 @@ export function ChatPane() {
       <div className="relative flex-1 min-h-0">
         <div className="absolute h-12 from-4% top-0 left-0 right-0 bg-linear-to-b from-background to-transparent z-20" />
         <div className="absolute h-12 bottom-0 left-0 right-0 bg-linear-to-t from-background from-4% to-transparent z-10" />
-        <Messages />
+        <Profiler id="Messages" onRender={perf.onRender}>
+          <Messages />
+        </Profiler>
         <Composer />
       </div>
     </div>
@@ -207,6 +211,7 @@ function TopBar() {
               variant="outline"
               className="electrobun-webkit-app-region-no-drag"
               title={active.path}
+              onPointerDown={() => perf.markClick("settings")}
               onClick={() => useStore.getState().setSettingsOpen(true)}
             >
               <Brain />

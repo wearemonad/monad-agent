@@ -20,6 +20,7 @@ import type { PermissionBroker } from "./PermissionBroker";
 import { summarize } from "./PermissionBroker";
 import { loadWorkspaceEnv } from "./envFile";
 import { monadTag, ULTRATHINK_SUFFIX } from "./SessionStore";
+import { FakeAgentSession } from "../dev/FakeAgentSession";
 import { sessionFilePath } from "./sessionFiles";
 import { forgetSessionOwner, recordSessionOwner } from "./sessionMeta";
 import { artifactOpFromToolName } from "../../shared/artifacts";
@@ -395,6 +396,17 @@ export class AgentService {
       backgroundRuns?: BackgroundRuns["Service"];
       /** The app runtime's owner of live CLI processes (closed on quit). */
       sessions?: AgentSessions["Service"];
+      /** Dev-only fake-stream harness (MONAD_FAKE_AGENT): interactive runs
+       *  are served by a FakeAgentSession instead of the CLI, through this
+       *  service's own delta buffer and emitter. Background runs stay real. */
+      fake?: {
+        onStep?: (
+          workspaceId: string,
+          workspacePath: string,
+          sessionId: string,
+          answer: string,
+        ) => void;
+      };
     } = {},
   ) {}
 
@@ -478,6 +490,7 @@ export class AgentService {
       this.execute(runId, auth, opts);
       return runId;
     }
+    if (this.oneShot.fake) return this.startFakeRun(opts);
     // Interactive runs are scoped per THREAD, not per workspace — the user
     // may work several threads in parallel (and while background runs work).
     // Only a run already streaming into this same thread blocks a message.
@@ -498,6 +511,7 @@ export class AgentService {
    *  workspace, unusable auth, no CLI) makes this a silent no-op — prewarm
    *  must never surface an error the user didn't cause. */
   prewarm(opts: InteractiveOpts & { auth?: AuthStrategy }): void {
+    if (this.oneShot.fake) return; // fake runs have no CLI to warm
     try {
       const auth = opts.auth ?? this.getAuth();
       const existing = this.findLiveForThread(
@@ -525,6 +539,19 @@ export class AgentService {
   }
 
   abortRun(runId: string): boolean {
+    const fake = this.fakeRuns.get(runId);
+    if (fake) {
+      fake.stop();
+      this.fakeRuns.delete(runId);
+      this.dropDeltas(runId);
+      this.emit({
+        kind: "run-error",
+        runId,
+        error: "Stopped by the user.",
+        aborted: true,
+      });
+      return true;
+    }
     if (this.backgroundRuns.stop(runId)) {
       this.broker.denyAllForRun(runId);
       return true;
@@ -558,6 +585,45 @@ export class AgentService {
       return true;
     }
     return false;
+  }
+
+  /** Fake runs in flight (dev harness only). */
+  private fakeRuns = new Map<string, FakeAgentSession>();
+
+  /** Serve an interactive run with a FakeAgentSession: deltas go through
+   *  queueDelta and complete blocks flush first, exactly like the CLI path. */
+  private startFakeRun(opts: {
+    workspaceId: string;
+    workspacePath: string;
+    runId?: string;
+    resumeSessionId?: string;
+  }): string {
+    const runId = opts.runId ?? randomUUID();
+    const sessionId = opts.resumeSessionId ?? randomUUID();
+    const session = new FakeAgentSession({
+      runId,
+      sessionId,
+      sink: {
+        delta: (kind, text) => this.queueDelta(runId, kind, text),
+        emit: (event) => {
+          this.flushDeltas(runId);
+          this.emit(event);
+        },
+      },
+      onStep: (answer) =>
+        this.oneShot.fake?.onStep?.(
+          opts.workspaceId,
+          opts.workspacePath,
+          sessionId,
+          answer,
+        ),
+    });
+    this.fakeRuns.set(runId, session);
+    void session.done.then(() => {
+      if (this.fakeRuns.get(runId) === session) this.fakeRuns.delete(runId);
+      this.dropDeltas(runId);
+    });
+    return runId;
   }
 
   /** ————— live sessions (interactive) ————— */

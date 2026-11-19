@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { Profiler, useEffect, useRef, useState } from "react";
 import { usePanelRef } from "react-resizable-panels";
 import { PanelLeft, PanelLeftClose } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api, refreshOllama, refreshSidebar } from "./rpc";
+import { perf } from "./lib/perf";
 import { zoomIn, zoomOut, zoomReset } from "./lib/zoom";
 import { useStore } from "./store";
 import { ChatPane } from "./components/ChatPane";
@@ -199,7 +200,9 @@ export default function AppRoot() {
             useStore.getState().setSidebarCollapsed(inPixels < 1);
           }}
         >
-          <Sidebar contentHidden={contentHidden} frozenWidth={slideWidth} />
+          <Profiler id="Sidebar" onRender={perf.onRender}>
+            <Sidebar contentHidden={contentHidden} frozenWidth={slideWidth} />
+          </Profiler>
         </ResizablePanel>
         {/* Doubles as the sidebar's right border, so the aside no longer
 				    draws its own. after:w-2 widens the grab target past the 1px
@@ -228,7 +231,9 @@ export default function AppRoot() {
 					    swaps to the settings nav. Chat state stays mounted underneath so
 					    closing returns to exactly where you were. */}
           <ErrorBoundary label="settings">
-            <SettingsPage />
+            <Profiler id="SettingsPage" onRender={perf.onRender}>
+              <SettingsPage />
+            </Profiler>
           </ErrorBoundary>
         </ResizablePanel>
       </ResizablePanelGroup>
