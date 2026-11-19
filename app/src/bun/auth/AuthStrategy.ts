@@ -1,8 +1,8 @@
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
-import { execSync } from "node:child_process";
 import type { AuthMode } from "../../shared/ipc";
+import { findOnPath } from "../services/shellPath";
 
 export interface AuthStrategy {
   id: AuthMode;
@@ -57,17 +57,13 @@ export class SubscriptionCliAuth implements AuthStrategy {
         return c;
       }
     }
-    // GUI apps don't inherit shell PATH on macOS; ask a login shell.
-    try {
-      const found = execSync('zsh -ilc "which claude"', {
-        encoding: "utf8",
-      }).trim();
-      if (found && fs.existsSync(found)) {
-        this.binaryPath = found;
-        return found;
-      }
-    } catch {
-      // fall through to validate() error
+    // GUI apps don't inherit the shell PATH on macOS; fixProcessPath merges
+    // the login shell's PATH in (async, at boot), so a plain PATH scan finds
+    // version-manager installs without spawning a shell here.
+    const found = findOnPath("claude");
+    if (found) {
+      this.binaryPath = found;
+      return found;
     }
     throw new Error(
       "Claude Code CLI not found. Install it and log in (https://claude.com/claude-code), or switch Monad to API-key mode.",

@@ -49,8 +49,8 @@ beforeAll(() => {
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
 describe("skill packs", () => {
-  test("import from a folder adds new skills, skips existing names", () => {
-    const res = packs.importSkills(wsDir, packDir);
+  test("import from a folder adds new skills, skips existing names", async () => {
+    const res = await packs.importSkills(wsDir, packDir);
     expect(res.added).toEqual(["new-skill"]);
     expect(res.skipped).toEqual(["existing-skill"]);
     expect(
@@ -60,26 +60,28 @@ describe("skill packs", () => {
     ).toBe(true);
   });
 
-  test("export → import roundtrip through a zip", () => {
-    const zip = packs.exportSkills(wsDir, "Test Co", outDir);
+  test("export → import roundtrip through a zip", async () => {
+    const zip = await packs.exportSkills(wsDir, "Test Co", outDir);
     expect(zip.endsWith("test-co-skills.zip")).toBe(true);
     expect(fs.existsSync(zip)).toBe(true);
 
     const otherWs = path.join(root, "other-ws");
     fs.mkdirSync(otherWs, { recursive: true });
-    const res = packs.importSkills(otherWs, zip);
+    const res = await packs.importSkills(otherWs, zip);
     expect(res.added.sort()).toEqual(["existing-skill", "new-skill"]);
   });
 
-  test("import with nothing skill-shaped fails clearly", () => {
+  test("import with nothing skill-shaped fails clearly", async () => {
     const empty = path.join(root, "empty");
     fs.mkdirSync(empty, { recursive: true });
-    expect(() => packs.importSkills(wsDir, empty)).toThrow(/No skills found/);
+    await expect(packs.importSkills(wsDir, empty)).rejects.toThrow(
+      /No skills found/,
+    );
   });
 
   // data#A: a SKILL.md at the root of an extracted zip would otherwise inherit
   // the random temp-dir name; the frontmatter name wins.
-  test("imported skill uses its frontmatter name, not the containing dir name", () => {
+  test("imported skill uses its frontmatter name, not the containing dir name", async () => {
     const oddDir = path.join(root, "tmp-xyz-123");
     fs.mkdirSync(oddDir, { recursive: true });
     fs.writeFileSync(
@@ -88,7 +90,7 @@ describe("skill packs", () => {
     );
     const freshWs = path.join(root, "ws-frontmatter");
     fs.mkdirSync(freshWs, { recursive: true });
-    const res = packs.importSkills(freshWs, oddDir);
+    const res = await packs.importSkills(freshWs, oddDir);
     expect(res.added).toEqual(["proper-name"]);
     expect(
       fs.existsSync(
@@ -102,9 +104,9 @@ describe("skill packs", () => {
 });
 
 describe("workspace export / import", () => {
-  test("export excludes secrets, state, and originals; import restores the rest", () => {
-    const zip = packs.exportWorkspace(wsDir, "Test Co", outDir);
-    const target = packs.importWorkspace(zip, root, "Restored Co");
+  test("export excludes secrets, state, and originals; import restores the rest", async () => {
+    const zip = await packs.exportWorkspace(wsDir, "Test Co", outDir);
+    const target = await packs.importWorkspace(zip, root, "Restored Co");
 
     expect(fs.existsSync(path.join(target, "knowledge", "kept.md"))).toBe(true);
     expect(
@@ -122,9 +124,9 @@ describe("workspace export / import", () => {
   });
 
   // H4: every secret shape must stay out of the shareable brain zip.
-  test("export excludes all .env variants, nested .env, and local settings", () => {
-    const zip = packs.exportWorkspace(wsDir, "Secrets Co", outDir);
-    const target = packs.importWorkspace(zip, root, "Secrets Restored");
+  test("export excludes all .env variants, nested .env, and local settings", async () => {
+    const zip = await packs.exportWorkspace(wsDir, "Secrets Co", outDir);
+    const target = await packs.importWorkspace(zip, root, "Secrets Restored");
     expect(fs.existsSync(path.join(target, ".env.local"))).toBe(false);
     expect(fs.existsSync(path.join(target, ".env.production"))).toBe(false);
     expect(fs.existsSync(path.join(target, "sub", ".env"))).toBe(false);
@@ -135,10 +137,10 @@ describe("workspace export / import", () => {
     expect(fs.existsSync(path.join(target, ".env.example"))).toBe(true);
   });
 
-  test("import refuses a non-empty target", () => {
-    const zip = packs.exportWorkspace(wsDir, "Test Co", outDir);
-    expect(() => packs.importWorkspace(zip, root, "Restored Co")).toThrow(
-      /not empty/,
-    );
+  test("import refuses a non-empty target", async () => {
+    const zip = await packs.exportWorkspace(wsDir, "Test Co", outDir);
+    await expect(
+      packs.importWorkspace(zip, root, "Restored Co"),
+    ).rejects.toThrow(/not empty/);
   });
 });

@@ -1,4 +1,4 @@
-import { Keychain } from "./Keychain";
+import { Keychain, KeychainServices } from "./Keychain";
 
 /** Per-workspace credential values entered in the app's Settings UI.
  *
@@ -8,9 +8,10 @@ import { Keychain } from "./Keychain";
  *  developer-only override underneath these. */
 export class WorkspaceEnvStore {
   private service(workspaceId: string): string {
-    return `monad-wsenv-${workspaceId}`;
+    return KeychainServices.workspaceEnv(workspaceId);
   }
 
+  /** Synchronous: reads the Keychain cache index.ts warms at boot. */
   get(workspaceId: string): Record<string, string> {
     try {
       return JSON.parse(Keychain.get(this.service(workspaceId)) ?? "{}");
@@ -19,21 +20,21 @@ export class WorkspaceEnvStore {
     }
   }
 
-  set(workspaceId: string, name: string, value: string): void {
+  async set(workspaceId: string, name: string, value: string): Promise<void> {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
       throw new Error("Invalid variable name.");
     const env = this.get(workspaceId);
     env[name] = value;
-    Keychain.set(this.service(workspaceId), JSON.stringify(env));
+    await Keychain.set(this.service(workspaceId), JSON.stringify(env));
   }
 
-  clear(workspaceId: string, name: string): void {
+  async clear(workspaceId: string, name: string): Promise<void> {
     const env = this.get(workspaceId);
     delete env[name];
     if (Object.keys(env).length === 0) {
-      Keychain.delete(this.service(workspaceId));
+      await Keychain.delete(this.service(workspaceId));
     } else {
-      Keychain.set(this.service(workspaceId), JSON.stringify(env));
+      await Keychain.set(this.service(workspaceId), JSON.stringify(env));
     }
   }
 
@@ -42,7 +43,7 @@ export class WorkspaceEnvStore {
     return Object.keys(this.get(workspaceId));
   }
 
-  deleteAll(workspaceId: string): void {
-    Keychain.delete(this.service(workspaceId));
+  deleteAll(workspaceId: string): Promise<void> {
+    return Keychain.delete(this.service(workspaceId));
   }
 }

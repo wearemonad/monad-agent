@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
+import { runChecked } from "./spawnAsync";
 
 /** Skill-pack and whole-brain zip import/export.
  *
@@ -11,25 +11,25 @@ import { execFileSync } from "node:child_process";
  *  is, so the consultancy deliverable format is the on-disk format. */
 export class Packs {
   /** Zip the workspace's .claude/skills → destDir/<name>-skills.zip. */
-  exportSkills(
+  async exportSkills(
     workspacePath: string,
     workspaceName: string,
     destDir: string,
-  ): string {
+  ): Promise<string> {
     const skillsDir = path.join(workspacePath, ".claude", "skills");
     if (!fs.existsSync(skillsDir))
       throw new Error("This workspace has no skills to export.");
     const dest = uniqueZip(destDir, `${slug(workspaceName)}-skills`);
-    execFileSync("zip", ["-r", dest, "."], { cwd: skillsDir });
+    await runChecked(["zip", "-r", dest, "."], { cwd: skillsDir });
     return dest;
   }
 
   /** Import skills from a .zip, a folder, or a git URL. Existing skill names
    *  are never overwritten — they land in `skipped`. */
-  importSkills(
+  async importSkills(
     workspacePath: string,
     source: string,
-  ): { added: string[]; skipped: string[] } {
+  ): Promise<{ added: string[]; skipped: string[] }> {
     const src = source.trim();
     if (!src) throw new Error("Give a zip file, a folder, or a git URL.");
     let root: string;
@@ -42,24 +42,24 @@ export class Packs {
         // unzip ship with macOS, unlike git, which is an Xcode CLT shim.
         const zip = path.join(root, "_pack.zip");
         try {
-          execFileSync("curl", ["-fsSL", archiveUrl, "-o", zip], {
-            stdio: "pipe",
-          });
+          await runChecked(["curl", "-fsSL", archiveUrl, "-o", zip]);
         } catch {
           throw new Error(
             `Could not download ${archiveUrl} — check the URL and that the repo is public.`,
           );
         }
-        execFileSync("unzip", ["-q", zip, "-d", root]);
+        await runChecked(["unzip", "-q", zip, "-d", root]);
         fs.rmSync(zip);
       } else {
         try {
-          execFileSync("git", ["clone", "--depth", "1", src, root], {
-            stdio: "pipe",
-          });
+          await runChecked(["git", "clone", "--depth", "1", src, root]);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (/xcrun|invalid active developer path|ENOENT/.test(msg)) {
+          if (
+            /xcrun|invalid active developer path|ENOENT|Executable not found/.test(
+              msg,
+            )
+          ) {
             throw new Error(
               "git isn't available on this Mac (Xcode Command Line Tools not installed). " +
                 "Run `xcode-select --install` in Terminal, or paste a github.com URL — those don't need git.",
@@ -71,7 +71,7 @@ export class Packs {
     } else if (src.toLowerCase().endsWith(".zip")) {
       if (!fs.existsSync(src)) throw new Error(`No such file: ${src}`);
       root = cleanup = fs.mkdtempSync(path.join(os.tmpdir(), "monad-pack-"));
-      execFileSync("unzip", ["-q", src, "-d", root]);
+      await runChecked(["unzip", "-q", src, "-d", root]);
     } else {
       if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) {
         throw new Error(`Not a folder, zip, or git URL: ${src}`);
@@ -111,19 +111,19 @@ export class Packs {
 
   /** Zip the whole brain minus secrets, app state, and archived originals.
    *  This is the "here is your company brain" deliverable. */
-  exportWorkspace(
+  async exportWorkspace(
     workspacePath: string,
     workspaceName: string,
     destDir: string,
-  ): string {
+  ): Promise<string> {
     const dest = uniqueZip(destDir, `${slug(workspaceName)}-brain`);
     // Exclude every secret shape, not just a bare ".env": .env.local,
     // .env.production, nested sub/.env, and local settings all leak
     // credentials in the "here is your company brain" deliverable. zip applies
     // -x globs against the full relative path, so cover both root and nested.
-    execFileSync(
-      "zip",
+    await runChecked(
       [
+        "zip",
         "-r",
         dest,
         ".",
@@ -145,14 +145,18 @@ export class Packs {
     // .env.example is a safe template (no real values) and useful to ship —
     // re-add it after the .env.* exclusion swept it out.
     if (fs.existsSync(path.join(workspacePath, ".env.example"))) {
-      execFileSync("zip", [dest, ".env.example"], { cwd: workspacePath });
+      await runChecked(["zip", dest, ".env.example"], { cwd: workspacePath });
     }
     return dest;
   }
 
   /** Unzip an exported brain into parentDir/name; returns the new path.
    *  Registration (and the missing-credentials amber rows) is the caller's job. */
-  importWorkspace(zipPath: string, parentDir: string, name: string): string {
+  async importWorkspace(
+    zipPath: string,
+    parentDir: string,
+    name: string,
+  ): Promise<string> {
     if (!fs.existsSync(zipPath)) throw new Error(`No such file: ${zipPath}`);
     const safe = name.trim().replace(/[/\\:]/g, "-");
     if (!safe) throw new Error("Workspace name is required.");
@@ -161,7 +165,7 @@ export class Packs {
       throw new Error(`Folder already exists and is not empty: ${target}`);
     }
     fs.mkdirSync(target, { recursive: true });
-    execFileSync("unzip", ["-q", zipPath, "-d", target]);
+    await runChecked(["unzip", "-q", zipPath, "-d", target]);
     return target;
   }
 }

@@ -26,7 +26,7 @@ export interface AuthorizationFlow<T, A> {
   ) => Promise<T>;
   /** Check and store the tokens. Runs only while the attempt is current, so
    *  a superseded or abandoned sign-in never writes anything. */
-  readonly finish: (tokens: T) => A;
+  readonly finish: (tokens: T) => A | Promise<A>;
 }
 
 export class GoogleSignInFailed extends Data.TaggedError("GoogleSignInFailed")<{
@@ -116,8 +116,8 @@ const signIn = <T, A>(flow: AuthorizationFlow<T, A>) =>
           message: e instanceof Error ? e.message : String(e),
         }),
     });
-    return yield* Effect.try({
-      try: () => flow.finish(tokens),
+    return yield* Effect.tryPromise({
+      try: async () => flow.finish(tokens),
       catch: (e) =>
         new GoogleSignInFailed({
           message: e instanceof Error ? e.message : String(e),

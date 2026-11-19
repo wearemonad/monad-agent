@@ -1,9 +1,9 @@
-import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ScheduledJob } from "../../shared/ipc";
 import { LOG_DIR, redactSecrets } from "./AppLog";
+import { runChecked } from "./spawnAsync";
 
 /** How much workspace history a bundle carries — enough to cover "it didn't
  *  run last Tuesday" without shipping months of activity. */
@@ -23,7 +23,7 @@ export type DiagnosticsInput = {
   /** The running scheduler's in-memory state (SchedulerService.snapshot). */
   schedulerLive?: unknown;
   /** macOS power log text; defaults to `pmset -g log`. Injected by tests. */
-  powerLog?: () => string;
+  powerLog?: () => string | Promise<string>;
   logDir?: string;
   now?: Date;
 };
@@ -33,7 +33,9 @@ export type DiagnosticsInput = {
  *  claims and recent activity. Deliberately excluded: API keys, OAuth
  *  tokens, .env files, transcripts, knowledge/ and outbox/ content. Returns
  *  the zip's path; throws when the zip can't be written. */
-export function exportDiagnostics(input: DiagnosticsInput): string {
+export async function exportDiagnostics(
+  input: DiagnosticsInput,
+): Promise<string> {
   const now = input.now ?? new Date();
   const stamp = stampOf(now);
   const name = `Monad-diagnostics-${stamp}`;
@@ -74,7 +76,7 @@ export function exportDiagnostics(input: DiagnosticsInput): string {
     // first question for any "the scheduled run didn't happen" report.
     let power = "";
     try {
-      power = sleepWakeEvents((input.powerLog ?? readPowerLog)(), now);
+      power = sleepWakeEvents(await (input.powerLog ?? readPowerLog)(), now);
     } catch (e) {
       power = `(power log unavailable: ${(e as Error).message})\n`;
     }
@@ -106,7 +108,8 @@ export function exportDiagnostics(input: DiagnosticsInput): string {
     const zip = uniquePath(path.join(outDir, `${name}.zip`));
     // ditto ships with macOS and writes the same zip Finder's Compress does.
     // No resource forks/xattrs: they turn into ._ clutter for whoever unzips it.
-    execFileSync("/usr/bin/ditto", [
+    await runChecked([
+      "/usr/bin/ditto",
       "-c",
       "-k",
       "--norsrc",
@@ -153,12 +156,8 @@ export function recentActivity(file: string, now: Date): string {
 const POWER_DAYS = 3;
 
 /** `pmset -g log`: the system power log, readable without admin rights. */
-function readPowerLog(): string {
-  return execFileSync("/usr/bin/pmset", ["-g", "log"], {
-    encoding: "utf8",
-    maxBuffer: 128 * 1024 * 1024,
-    timeout: 20_000,
-  });
+function readPowerLog(): Promise<string> {
+  return runChecked(["/usr/bin/pmset", "-g", "log"], { timeout: 20_000 });
 }
 
 /** Sleep / Wake / DarkWake (and shutdown/restart) lines from the last

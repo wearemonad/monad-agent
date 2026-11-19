@@ -1,9 +1,9 @@
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
-import { execSync, spawnSync } from "node:child_process";
 import { Codex } from "@openai/codex-sdk";
 import type { CodexAuthStatus, OpenAIProviderId } from "../../shared/ipc";
+import { findOnPath } from "../services/shellPath";
 
 /** How an OpenAI provider drives the Codex harness: which binary, which
  *  credentials. The OpenAI counterpart of AuthStrategy (which configures the
@@ -56,26 +56,13 @@ export class CodexCli {
         return c;
       }
     }
-    // GUI apps don't inherit shell PATH on macOS; ask a login shell. This
-    // also finds version-manager shims (asdf, mise, nvm-installed npm globals).
-    try {
-      // An interactive shell runs the user's .zshrc, which may print its own
-      // output (prompt themes, greetings) — the path is the last absolute line.
-      const found =
-        execSync('zsh -ilc "which codex"', {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-        })
-          .split("\n")
-          .map((l) => l.trim())
-          .filter((l) => l.startsWith("/"))
-          .pop() ?? "";
-      if (found && fs.existsSync(found)) {
-        this.binaryPath = found;
-        return found;
-      }
-    } catch {
-      // fall through to the error below
+    // GUI apps don't inherit the shell PATH on macOS; fixProcessPath merges
+    // the login shell's PATH in (async, at boot) — which also carries
+    // version-manager shims (asdf, mise, nvm-installed npm globals).
+    const found = findOnPath("codex");
+    if (found) {
+      this.binaryPath = found;
+      return found;
     }
     throw new Error(
       "Codex CLI not found. Install it (npm i -g @openai/codex) and sign in with `codex login`, or use an OpenAI API key instead.",
@@ -88,31 +75,6 @@ export class CodexCli {
     } catch {
       return "";
     }
-  }
-
-  /** `codex login status` — exits 0 and names the method when signed in.
-   *  Synchronous: for Settings and diagnostics only. Hot paths (every image
-   *  request) use statusAsync, which never blocks the backend thread. */
-  status(): CodexAuthStatus {
-    let bin: string;
-    try {
-      bin = this.resolveBinary();
-    } catch (e) {
-      return { loggedIn: false, error: String((e as Error).message) };
-    }
-    // The CLI prints its verdict on stderr, so read both streams.
-    const res = spawnSync(bin, ["login", "status"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 15_000,
-    });
-    const status = parseLoginStatus(
-      res.status,
-      `${res.stdout ?? ""}${res.stderr ?? ""}`,
-      res.error?.message,
-    );
-    this.remember(status);
-    return status;
   }
 
   private signedInAt = 0;
@@ -129,6 +91,12 @@ export class CodexCli {
     } else {
       this.signedInStatus = null;
     }
+  }
+
+  /** Drop the cached answer: Settings' re-check, an explicit test and a
+   *  finished sign-in must see the CLI's current state. */
+  forgetStatus(): void {
+    this.signedInStatus = null;
   }
 
   /** `codex login status` without blocking the event loop: spawned async,

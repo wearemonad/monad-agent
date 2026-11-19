@@ -19,6 +19,7 @@ import { isClaudeLoginError } from "../../shared/authErrors";
 import type { PermissionBroker } from "./PermissionBroker";
 import { summarize } from "./PermissionBroker";
 import { loadWorkspaceEnv } from "./envFile";
+import { shellPathPending } from "./shellPath";
 import { monadTag, ULTRATHINK_SUFFIX } from "./SessionStore";
 import { FakeAgentSession } from "../dev/FakeAgentSession";
 import { sessionFilePath } from "./sessionFiles";
@@ -815,6 +816,9 @@ export class AgentService {
   ): Promise<LiveQuery> {
     // Local mode boots the Ollama server here; cloud modes have no hook.
     if (auth.prepare) await auth.prepare();
+    // The run inherits process.env's PATH: wait for the login-shell merge.
+    const pathPending = shellPathPending();
+    if (pathPending) await pathPending;
     const { env, mcpServers, promptAppend, authOpts } = this.prepareRun(
       auth,
       opts,
@@ -1364,6 +1368,9 @@ export class AgentService {
     const open = async (signal: AbortSignal) => {
       // Local mode boots the Ollama server here; cloud modes have no hook.
       if (auth.prepare) await auth.prepare();
+      // The run inherits process.env's PATH: wait for the login-shell merge.
+      const pathPending = shellPathPending();
+      if (pathPending) await pathPending;
       const { env, mcpServers, promptAppend, authOpts } = this.prepareRun(
         auth,
         opts,

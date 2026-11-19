@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { run } from "./spawnAsync";
 
 /** GUI-launched macOS apps inherit launchd's minimal PATH
  *  (/usr/bin:/bin:/usr/sbin:/sbin), so user-installed tools — npx from
@@ -13,12 +14,52 @@ import * as path from "node:path";
  *  child_process do NOT see later process.env.PATH writes unless they are
  *  passed explicitly (`{ PATH: process.env.PATH }` / `env: process.env`) —
  *  agent runs do this via their merged env. */
-export function fixProcessPath(): void {
+
+let resolving: Promise<void> | null = null;
+let settled = false;
+
+/** Starts the login-shell probe (async — it can take seconds with a heavy
+ *  .zshrc) and returns the memoised promise. The well-known fallback dirs are
+ *  merged in synchronously first, so the common installs resolve even before
+ *  the shell answers. Callers that spawn user tools await shellPathReady(). */
+export function fixProcessPath(): Promise<void> {
+  if (resolving) return resolving;
   process.env.PATH = mergePaths(
-    readLoginShellPath(),
+    [],
     process.env.PATH ?? "",
     fallbackDirs().filter((p) => fs.existsSync(p)),
   );
+  resolving = readLoginShellPath().then((shellPaths) => {
+    process.env.PATH = mergePaths(shellPaths, process.env.PATH ?? "", []);
+    settled = true;
+  });
+  return resolving;
+}
+
+/** The login-shell probe while it is still running, else null — so callers
+ *  pay no extra tick once PATH is settled: `const p = shellPathPending();
+ *  if (p) await p;`. */
+export function shellPathPending(): Promise<void> | null {
+  return settled ? null : resolving;
+}
+
+/** The first executable called `name` on `pathVar` — `which`, without a shell
+ *  (and without blocking on one). */
+export function findOnPath(
+  name: string,
+  pathVar: string = process.env.PATH ?? "",
+): string | null {
+  for (const dir of pathVar.split(":")) {
+    if (!dir) continue;
+    const candidate = path.join(dir, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      // not here
+    }
+  }
+  return null;
 }
 
 /** Shell entries first (they're the user's intended order), then whatever the
@@ -52,22 +93,18 @@ function fallbackDirs(): string[] {
  *  the login profile (Homebrew's shellenv), -i sources the interactive rc
  *  (nvm and friends). Output is wrapped in sentinels so prompt noise or
  *  plugin chatter from the rc files can't corrupt the result. */
-function readLoginShellPath(): string[] {
+async function readLoginShellPath(): Promise<string[]> {
   if (process.platform === "win32") return [];
   const shell = process.env.SHELL || "/bin/zsh";
   try {
-    const res = Bun.spawnSync(
+    const res = await run(
       [shell, "-ilc", 'printf "__PATH_S__%s__PATH_E__" "$PATH"'],
       {
         env: { ...process.env, DISABLE_AUTO_UPDATE: "true" },
-        stdout: "pipe",
-        stderr: "ignore",
-        stdin: "ignore",
         timeout: 4000,
       },
     );
-    const out = res.stdout?.toString() ?? "";
-    const match = out.match(/__PATH_S__(.*?)__PATH_E__/s);
+    const match = res.stdout.match(/__PATH_S__(.*?)__PATH_E__/s);
     return match ? match[1].split(":").filter(Boolean) : [];
   } catch {
     return [];

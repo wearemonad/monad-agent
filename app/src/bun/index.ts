@@ -36,6 +36,8 @@ import { PermissionBroker } from "./services/PermissionBroker";
 import { SessionStore } from "./services/SessionStore";
 import { CONFIG_DIR, WorkspaceManager } from "./services/WorkspaceManager";
 import { SettingsStore } from "./services/SettingsStore";
+import { Keychain, KeychainServices } from "./services/Keychain";
+import { run, runChecked } from "./services/spawnAsync";
 import { AgentSessions } from "./services/AgentSession";
 import { GoogleDriveService } from "./services/GoogleDriveService";
 import { GoogleOAuth } from "./services/GoogleOAuth";
@@ -168,7 +170,7 @@ import {
 // Before anything else: GUI-launched apps get launchd's bare PATH, which hides
 // npx/uvx/docker from Bun.which, connector health checks, and every MCP server
 // the agent spawns. Merge in the login shell's PATH first.
-fixProcessPath();
+void fixProcessPath();
 // Console → ~/Library/Logs/Monad/monad.log: a Finder-launched app's stdout is
 // discarded, so this file is the only record of what the app did.
 installAppLog();
@@ -250,6 +252,21 @@ const workspaces = new WorkspaceManager(DEFAULT_WORKSPACE);
 setActiveWorkspaceProvider(() => workspaces.active()?.id ?? null);
 setNativeNotifier((n) => Utils.showNotification(n));
 const sessions = new SessionStore();
+
+/** The Keychain items a workspace owns (Google token, Settings-entered env). */
+function workspaceKeychainServices(workspaceId: string): string[] {
+  return [
+    KeychainServices.driveRefreshToken(workspaceId),
+    KeychainServices.workspaceEnv(workspaceId),
+  ];
+}
+// Every secret the app reads, loaded in parallel before anything can ask:
+// the getters answer from this cache, so no `security` spawn ever waits on
+// bun's main thread (PARALLEL-THREADS-PR2, 2c).
+await Keychain.prefetch([
+  ...SettingsStore.keychainServices(),
+  ...workspaces.list().flatMap((ws) => workspaceKeychainServices(ws.id)),
+]);
 
 const ollama = new OllamaService();
 const subscriptionAuth = new SubscriptionCliAuth(
@@ -1565,7 +1582,7 @@ async function doHealthChecks(): Promise<HealthIssue[]> {
   }
   // Same for the OpenAI subscription: it rides the Codex CLI's ChatGPT login.
   if (settings.enabledProviders.includes("openai-subscription")) {
-    const status = codexCli.status();
+    const status = await codexCli.statusAsync();
     if (!status.loggedIn) {
       issues.push({
         workspaceId: "",
@@ -1954,7 +1971,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         }
         return { ok };
       },
-      addWorkspace: ({ path: wsPath, create }) => {
+      addWorkspace: async ({ path: wsPath, create }) => {
         try {
           const workspace = create
             ? workspaces.create(
@@ -1963,6 +1980,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
                 create.templateId,
               )
             : workspaces.add(wsPath!);
+          await Keychain.prefetch(workspaceKeychainServices(workspace.id));
           pushWorkspaces();
           return { workspace };
         } catch (e) {
@@ -1971,7 +1989,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
       },
       removeWorkspace: ({ id }) => {
         drive.disconnect(id); // clear tokens for unregistered workspaces
-        wsEnv.deleteAll(id); // and Settings-entered credentials
+        void wsEnv.deleteAll(id); // and Settings-entered credentials
         const ok = workspaces.remove(id);
         pushWorkspaces();
         return { ok };
@@ -2001,7 +2019,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           };
         }
         drive.disconnect(id);
-        wsEnv.deleteAll(id);
+        void wsEnv.deleteAll(id);
         workspaces.remove(id);
         pushWorkspaces();
         return { ok: true };
@@ -2062,20 +2080,20 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         return picked ? { path: picked } : {};
       },
 
-      exportSkills: ({ workspaceId, destDir }) => {
+      exportSkills: async ({ workspaceId, destDir }) => {
         try {
           const ws = workspaces.get(workspaceId);
           if (!ws) throw new Error("Unknown workspace.");
-          return { path: packs.exportSkills(ws.path, ws.name, destDir) };
+          return { path: await packs.exportSkills(ws.path, ws.name, destDir) };
         } catch (e) {
           return { error: String((e as Error).message ?? e) };
         }
       },
-      importSkills: ({ workspaceId, source }) => {
+      importSkills: async ({ workspaceId, source }) => {
         try {
           const ws = workspaces.get(workspaceId);
           if (!ws) throw new Error("Unknown workspace.");
-          const res = packs.importSkills(ws.path, source);
+          const res = await packs.importSkills(ws.path, source);
           if (res.added.length) {
             activity.append(ws.path, {
               kind: "capture",
@@ -2091,19 +2109,22 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           };
         }
       },
-      exportWorkspace: ({ workspaceId, destDir }) => {
+      exportWorkspace: async ({ workspaceId, destDir }) => {
         try {
           const ws = workspaces.get(workspaceId);
           if (!ws) throw new Error("Unknown workspace.");
-          return { path: packs.exportWorkspace(ws.path, ws.name, destDir) };
+          return {
+            path: await packs.exportWorkspace(ws.path, ws.name, destDir),
+          };
         } catch (e) {
           return { error: String((e as Error).message ?? e) };
         }
       },
-      importWorkspace: ({ zipPath, parentDir, name }) => {
+      importWorkspace: async ({ zipPath, parentDir, name }) => {
         try {
-          const target = packs.importWorkspace(zipPath, parentDir, name);
+          const target = await packs.importWorkspace(zipPath, parentDir, name);
           const workspace = workspaces.add(target, name);
+          await Keychain.prefetch(workspaceKeychainServices(workspace.id));
           pushWorkspaces();
           return { workspace };
         } catch (e) {
@@ -2136,11 +2157,12 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         if (recheck) {
           subscriptionAuth.forgetBinary();
           codexCli.forgetBinary();
+          codexCli.forgetStatus();
         }
         return settingsView();
       },
-      updateSettings: (patch) => {
-        settings.update(patch);
+      updateSettings: async (patch) => {
+        await settings.update(patch);
         if (patch.perfDiagnostics !== undefined) {
           perf.setEnabled(patch.perfDiagnostics);
         }
@@ -2156,7 +2178,8 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
               return { ok: true, message: "OpenAI API key configured." };
             }
             const found = `Codex CLI found: ${codexCli.resolveBinary()}`;
-            const status = codexCli.status();
+            codexCli.forgetStatus();
+            const status = await codexCli.statusAsync();
             if (status.loggedIn) {
               return {
                 ok: true,
@@ -2201,19 +2224,20 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
       },
 
       claudeAuthStatus: async () => claudeLogin.status(),
-      codexAuthStatus: async () => codexCli.status(),
+      codexAuthStatus: async () => codexCli.statusAsync(),
       codexLogin: async () => {
         try {
           await runCodexLogin(codexCli.resolveBinary());
           scheduleHealthRecheck();
-          const status = codexCli.status();
+          codexCli.forgetStatus();
+          const status = await codexCli.statusAsync();
           return status.loggedIn
             ? { ok: true, status }
             : { ok: false, status, error: "Sign-in didn't complete." };
         } catch (e) {
           return {
             ok: false,
-            status: codexCli.status(),
+            status: await codexCli.statusAsync(),
             error: String((e as Error).message ?? e),
           };
         }
@@ -2242,7 +2266,8 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           .then(() => {
             // First model in the library becomes the local default — the user
             // can change it, but "download → it works" must be the happy path.
-            if (!settings.localModel) settings.update({ localModel: model });
+            if (!settings.localModel)
+              void settings.update({ localModel: model });
             send()?.ollamaPullProgress({ model, status: "done", done: true });
           })
           .catch((e) =>
@@ -2961,18 +2986,18 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         return mcpConfig.test(ws.path, name, wsEnv.get(workspaceId));
       },
 
-      wsEnvSet: ({ workspaceId, name, value }) => {
+      wsEnvSet: async ({ workspaceId, name, value }) => {
         try {
           if (!value.trim()) throw new Error("Value is empty.");
-          wsEnv.set(workspaceId, name, value.trim());
+          await wsEnv.set(workspaceId, name, value.trim());
           scheduleHealthRecheck();
           return { ok: true };
         } catch (e) {
           return { ok: false, error: String((e as Error).message) };
         }
       },
-      wsEnvClear: ({ workspaceId, name }) => {
-        wsEnv.clear(workspaceId, name);
+      wsEnvClear: async ({ workspaceId, name }) => {
+        await wsEnv.clear(workspaceId, name);
         scheduleHealthRecheck();
         return { ok: true };
       },
@@ -3080,16 +3105,13 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
 
 // macOS marketing version ("15.5"), probed once — os.release() only gives the
 // Darwin kernel version, which nobody recognises in an About box.
-const macosVersion = (() => {
-  try {
-    const out = Bun.spawnSync(["sw_vers", "-productVersion"])
-      .stdout.toString()
-      .trim();
-    return out ? `macOS ${out}` : `Darwin ${os.release()}`;
-  } catch {
-    return `Darwin ${os.release()}`;
-  }
-})();
+// Async and filled in the background: the Darwin fallback shows until it lands.
+let macosVersion = `Darwin ${os.release()}`;
+void runChecked(["sw_vers", "-productVersion"])
+  .then((out) => {
+    if (out.trim()) macosVersion = `macOS ${out.trim()}`;
+  })
+  .catch(() => {});
 
 function settingsView() {
   let resolved = "";
@@ -3156,26 +3178,24 @@ function revealLogs(): boolean {
 
 /** Help → Export Diagnostics… / Settings → Troubleshooting: zip the logs and
  *  scheduler state onto the Desktop and reveal it in Finder. */
-function runExportDiagnostics(): {
+async function runExportDiagnostics(): Promise<{
   ok: boolean;
   path?: string;
   error?: string;
-} {
+}> {
   try {
     const v = settingsView();
     let claudeCliVersion = "";
     if (v.resolvedClaudePath) {
       try {
-        claudeCliVersion = Bun.spawnSync([v.resolvedClaudePath, "--version"], {
-          timeout: 5_000,
-        })
-          .stdout.toString()
-          .trim();
+        claudeCliVersion = (
+          await run([v.resolvedClaudePath, "--version"], { timeout: 5_000 })
+        ).stdout.trim();
       } catch {
         // unknown — the path alone still helps
       }
     }
-    const zip = exportDiagnostics({
+    const zip = await exportDiagnostics({
       about: {
         appVersion: v.appVersion,
         channel: v.channel,
@@ -3426,12 +3446,13 @@ ApplicationMenu.on("application-menu-clicked", (event: unknown) => {
   } else if (action === "check-for-updates") {
     void menuCheckForUpdate();
   } else if (action === "export-diagnostics") {
-    const res = runExportDiagnostics();
-    notify(
-      "Export Diagnostics",
-      res.ok
-        ? `Saved ${path.basename(res.path!)} — send that file to whoever is helping you.`
-        : `Couldn't export diagnostics: ${res.error}`,
+    void runExportDiagnostics().then((res) =>
+      notify(
+        "Export Diagnostics",
+        res.ok
+          ? `Saved ${path.basename(res.path!)} — send that file to whoever is helping you.`
+          : `Couldn't export diagnostics: ${res.error}`,
+      ),
     );
   } else if (action === "open-logs") {
     revealLogs();

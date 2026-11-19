@@ -9,6 +9,7 @@ import type { AgentStreamEvent, ChatItem, RunOptions } from "../../shared/ipc";
 import type { CodexAuthStrategy } from "../auth/CodexAuth";
 import type { CodexThreadStore, CodexThreadRecord } from "./CodexThreadStore";
 import { loadWorkspaceEnv } from "./envFile";
+import { shellPathPending } from "./shellPath";
 import { summarize } from "./PermissionBroker";
 
 /** Every current Codex model has a 272K window; the meter uses it until a
@@ -447,6 +448,9 @@ export class CodexAgentService {
 
     let failure = "";
     try {
+      // The run inherits process.env's PATH: wait for the login-shell merge.
+      const pathPending = shellPathPending();
+      if (pathPending) await pathPending;
       const {
         codexPathOverride,
         apiKey,
