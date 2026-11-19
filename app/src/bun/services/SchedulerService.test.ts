@@ -106,6 +106,8 @@ function makeScheduler(
     startError?: string;
     /** Workspace dir to use (lets a test seed claims before construction). */
     wsPath?: string;
+    /** The foreground gate's verdict (ForegroundGate.isIdle). */
+    foregroundIdle?: () => boolean;
   } = {},
 ) {
   // Fake clock: starts at the real time (existing tests compare titles
@@ -171,6 +173,7 @@ function makeScheduler(
     () => clock.now,
     opts.delivered,
     (_cwd, entry) => logged.push(entry.detail),
+    opts.foregroundIdle,
   );
   const realTick = scheduler.tick.bind(scheduler);
   scheduler.tick = (now?: Date, signal?: AbortSignal) => {
@@ -525,6 +528,42 @@ describe("catch-up on launch", () => {
     });
     expect(succeeded).toEqual([["ws1", "j1", localDateKey(monday0915)]]);
     expect(jobs[0].lastSuccessDate).toBe(localDateKey(monday0915));
+  });
+});
+
+describe("catch-up waits while the app is in use", () => {
+  test("a catch-up job is held while busy, and runs anyway after 10 minutes", async () => {
+    const { scheduler, started } = makeScheduler({
+      jobs: [job()], // 08:00, ticked at 09:15 — a catch-up
+      foregroundIdle: () => false,
+    });
+    await scheduler.tick(monday0915);
+    await scheduler.tick(new Date(2026, 6, 6, 9, 24));
+    expect(started.length).toBe(0);
+    await scheduler.tick(new Date(2026, 6, 6, 9, 25));
+    expect(started.length).toBe(1);
+  });
+
+  test("a catch-up job runs as soon as the app is idle", async () => {
+    let idle = false;
+    const { scheduler, started } = makeScheduler({
+      jobs: [job()],
+      foregroundIdle: () => idle,
+    });
+    await scheduler.tick(monday0915);
+    expect(started.length).toBe(0);
+    idle = true;
+    await scheduler.tick(new Date(2026, 6, 6, 9, 16));
+    expect(started.length).toBe(1);
+  });
+
+  test("a job due right now runs on time, busy or not", async () => {
+    const { scheduler, started } = makeScheduler({
+      jobs: [job({ hour: 9, minute: 15 })],
+      foregroundIdle: () => false,
+    });
+    await scheduler.tick(new Date(2026, 6, 6, 9, 16));
+    expect(started.length).toBe(1);
   });
 });
 

@@ -98,6 +98,17 @@ export class SettingsStore {
     );
   }
 
+  /** Every app-wide Keychain item these getters read, for the boot prefetch
+   *  (the getters themselves only read the warmed cache). */
+  static keychainServices(): string[] {
+    return [
+      KeychainServices.anthropicApiKey,
+      KeychainServices.openaiApiKey,
+      KeychainServices.googleClientSecret,
+      ...IMAGE_PROVIDER_IDS.map((id) => KeychainServices.imageApiKey(id)),
+    ];
+  }
+
   getApiKey(): string | null {
     return Keychain.get(KeychainServices.anthropicApiKey);
   }
@@ -131,7 +142,7 @@ export class SettingsStore {
     };
   }
 
-  update(patch: {
+  async update(patch: {
     authMode?: AuthMode;
     enabledProviders?: ProviderId[];
     claudeBinaryPath?: string | null;
@@ -147,17 +158,17 @@ export class SettingsStore {
     /** "" or null resets a provider to its default model. */
     imageModels?: Partial<Record<ImageProviderId, string | null>>;
     perfDiagnostics?: boolean;
-  }): void {
+  }): Promise<void> {
     // Keychain writes FIRST: a denied/locked keychain prompt throws, and it
     // must do so before any in-memory mutation — otherwise the unrelated
     // settings in the same patch are half-applied in memory but never saved,
     // leaving memory diverged from disk.
     if (patch.apiKey)
-      Keychain.set(KeychainServices.anthropicApiKey, patch.apiKey);
+      await Keychain.set(KeychainServices.anthropicApiKey, patch.apiKey);
     if (patch.openaiApiKey)
-      Keychain.set(KeychainServices.openaiApiKey, patch.openaiApiKey);
+      await Keychain.set(KeychainServices.openaiApiKey, patch.openaiApiKey);
     if (patch.googleClientSecret) {
-      Keychain.set(
+      await Keychain.set(
         KeychainServices.googleClientSecret,
         patch.googleClientSecret,
       );
@@ -167,8 +178,8 @@ export class SettingsStore {
     ) as [ImageProviderId, string | null][];
     for (const [id, key] of imageKeys) {
       if (key?.trim())
-        Keychain.set(KeychainServices.imageApiKey(id), key.trim());
-      else Keychain.delete(KeychainServices.imageApiKey(id));
+        await Keychain.set(KeychainServices.imageApiKey(id), key.trim());
+      else await Keychain.delete(KeychainServices.imageApiKey(id));
     }
     // The first key added becomes the default image model; removing the
     // default's key hands the role to another provider that has one.

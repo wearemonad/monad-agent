@@ -39,7 +39,11 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sources (
 	path TEXT PRIMARY KEY,
 	type TEXT NOT NULL,
-	stamp TEXT NOT NULL
+	stamp TEXT NOT NULL,
+	indexed_bytes INTEGER,
+	tail_offset INTEGER,
+	tail_chunks INTEGER,
+	tail_sig TEXT
 );
 CREATE TABLE IF NOT EXISTS chunks (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,25 +152,62 @@ function splitLong(text: string): string[] {
   return out;
 }
 
-/** Condense a session JSONL into one chunk per user↔assistant exchange.
+/** One session JSONL line that ended up in an exchange, located by byte. */
+type ExchangeStart = { offset: number };
+
+/** A session JSONL parsed into exchange chunks. Each chunk records the byte
+ *  offset of the line that opened its exchange; `consumed` is how many bytes
+ *  of complete lines were read (a half-flushed last line is left for later),
+ *  and `lastExchangeOffset` where the final exchange began — the point an
+ *  incremental re-read must restart from, since a reply may still be coming. */
+export type ParsedSession = {
+  chunks: (Chunk & ExchangeStart)[];
+  consumed: number;
+  lastExchangeOffset: number | null;
+};
+
+/** Condense session JSONL bytes into one chunk per user↔assistant exchange.
  *  Only conversational text counts — tool payloads and system-injected
  *  ("<"-prefixed) blocks are machine noise that would drown recall (the same
  *  filter ⌘K search applies, and the reason Hermes' trigram index skips tool
  *  rows). Each side is truncated: recall needs the gist plus enough exact
- *  wording to search on, not the full transcript (the JSONL keeps that). */
-export function chunkSessionJsonl(jsonl: string, fileDate: string): Chunk[] {
-  type Exchange = { user: string[]; assistant: string[]; date: string };
+ *  wording to search on, not the full transcript (the JSONL keeps that).
+ *  `baseOffset` is where `bytes` starts in the file. */
+export function parseSessionExchanges(
+  bytes: Uint8Array,
+  fileDate: string,
+  baseOffset = 0,
+): ParsedSession {
+  type Exchange = {
+    user: string[];
+    assistant: string[];
+    date: string;
+    offset: number;
+  };
   const exchanges: Exchange[] = [];
   let current: Exchange | null = null;
-  for (const line of jsonl.split("\n")) {
-    if (!line.includes("{")) continue;
-    let msg: any;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      continue;
+  const decoder = new TextDecoder();
+  let consumed = 0;
+  let lineStart = 0;
+  while (lineStart < bytes.length) {
+    const nl = bytes.indexOf(0x0a, lineStart);
+    const lineEnd = nl === -1 ? bytes.length : nl;
+    const line = decoder.decode(bytes.subarray(lineStart, lineEnd));
+    const offset = baseOffset + lineStart;
+    const next = nl === -1 ? bytes.length : nl + 1;
+    let msg: any = null;
+    if (line.includes("{")) {
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        // A last line without its newline that doesn't parse is still being
+        // written: stop before it, the next sync reads it whole.
+        if (nl === -1) break;
+      }
     }
-    if (msg.type !== "user" && msg.type !== "assistant") continue;
+    consumed = next;
+    lineStart = next;
+    if (!msg || (msg.type !== "user" && msg.type !== "assistant")) continue;
     const content = msg.message?.content;
     const texts: string[] =
       typeof content === "string"
@@ -186,16 +227,16 @@ export function chunkSessionJsonl(jsonl: string, fileDate: string): Chunk[] {
         ? msg.timestamp.slice(0, 10)
         : fileDate;
     if (msg.type === "user") {
-      current = { user: visible, assistant: [], date };
+      current = { user: visible, assistant: [], date, offset };
       exchanges.push(current);
     } else if (current) {
       current.assistant.push(...visible);
     } else {
-      current = { user: [], assistant: visible, date };
+      current = { user: [], assistant: visible, date, offset };
       exchanges.push(current);
     }
   }
-  const chunks: Chunk[] = [];
+  const chunks: (Chunk & ExchangeStart)[] = [];
   for (const ex of exchanges) {
     const user = ex.user.join("\n").slice(0, MAX_EXCHANGE_SIDE_CHARS);
     const assistant = ex.assistant.join("\n").slice(0, MAX_EXCHANGE_SIDE_CHARS);
@@ -206,9 +247,21 @@ export function chunkSessionJsonl(jsonl: string, fileDate: string): Chunk[] {
       .filter(Boolean)
       .join("\n");
     if (body.length < 20) continue;
-    chunks.push({ heading: "", date: ex.date, body });
+    chunks.push({ heading: "", date: ex.date, body, offset: ex.offset });
   }
-  return chunks;
+  return {
+    chunks,
+    consumed,
+    lastExchangeOffset: exchanges[exchanges.length - 1]?.offset ?? null,
+  };
+}
+
+/** parseSessionExchanges over a whole JSONL string. */
+export function chunkSessionJsonl(jsonl: string, fileDate: string): Chunk[] {
+  return parseSessionExchanges(
+    new TextEncoder().encode(jsonl),
+    fileDate,
+  ).chunks.map(({ heading, date, body }) => ({ heading, date, body }));
 }
 
 /** English stop-words dropped from keyword queries. OR-joined natural-language
@@ -284,6 +337,7 @@ export class MemoryIndexService {
     db = new Database(path.join(dir, "memory.db"));
     db.exec("PRAGMA journal_mode = WAL;");
     db.exec(SCHEMA);
+    migrate(db);
     this.dbs.set(wsPath, db);
     this.reconcileEmbeddingModel(db);
     return db;
@@ -338,7 +392,7 @@ export class MemoryIndexService {
    *  skipped; vanished files drop their chunks. The knowledge graph's per-doc
    *  facts ride along under their own stamp, so a parser upgrade re-parses
    *  docs without re-chunking (and re-embedding) them. */
-  syncKnowledge(wsPath: string): void {
+  syncKnowledge(wsPath: string): boolean {
     const db = this.db(wsPath);
     const base = path.join(wsPath, "knowledge");
     const seen = new Set<string>();
@@ -409,6 +463,7 @@ export class MemoryIndexService {
       graphChanged = true;
     }
     if (graphChanged) this.graphs.delete(wsPath);
+    return graphChanged;
   }
 
   private graphStamp(db: Database, docPath: string): string | null {
@@ -423,6 +478,14 @@ export class MemoryIndexService {
   graph(wsPath: string): KnowledgeGraph {
     const cached = this.graphs.get(wsPath);
     if (cached) return cached;
+    const graph = KnowledgeGraph.build(this.graphDocs(wsPath));
+    this.graphs.set(wsPath, graph);
+    return graph;
+  }
+
+  /** The cached per-doc graph facts the graph is built from — what the
+   *  worker hands the main thread, which builds its own copy. */
+  graphDocs(wsPath: string): { path: string; facts: DocFacts }[] {
     const rows = this.db(wsPath)
       .query("SELECT path, facts FROM graph_docs")
       .all() as { path: string; facts: string }[];
@@ -434,19 +497,29 @@ export class MemoryIndexService {
         // corrupt row — the doc re-parses when its file next changes
       }
     }
-    const graph = KnowledgeGraph.build(docs);
-    this.graphs.set(wsPath, graph);
-    return graph;
+    return docs;
   }
 
   /** Incrementally index past conversations. Callers pass the Monad-tagged
    *  sessions only, so hidden runs (ingest, background jobs) never pollute
-   *  recall — the same noise-exclusion lesson Hermes learned the hard way. */
-  syncSessions(wsPath: string, sessions: SessionSource[]): void {
+   *  recall — the same noise-exclusion lesson Hermes learned the hard way.
+   *  `skip` names Sessions with a Turn in flight: they keep their chunks and
+   *  are indexed once the Turn ends.
+   *
+   *  Session JSONL only grows, so a grown file is read from where its last
+   *  exchange began (a reply may have been on its way), and only exchanges
+   *  that changed are rewritten — the rest keep their embeddings. A file
+   *  that shrank or no longer matches at that point is re-indexed whole. */
+  syncSessions(
+    wsPath: string,
+    sessions: SessionSource[],
+    opts: { skip?: ReadonlySet<string> } = {},
+  ): void {
     const db = this.db(wsPath);
     const seen = new Set<string>();
     for (const s of sessions) {
       seen.add(s.sessionId);
+      if (opts.skip?.has(s.sessionId)) continue;
       let st: fs.Stats;
       try {
         st = fs.statSync(s.jsonlPath);
@@ -454,21 +527,100 @@ export class MemoryIndexService {
         continue;
       }
       const stamp = `${st.mtimeMs}:${st.size}:${s.title}`;
-      if (this.sourceStamp(db, s.sessionId) === stamp) continue;
-      let jsonl: string;
+      const state = this.sessionState(db, s.sessionId);
+      if (state?.stamp === stamp) continue;
       try {
-        jsonl = fs.readFileSync(s.jsonlPath, "utf8");
+        this.indexSession(db, s, st, stamp, state);
       } catch {
-        continue;
+        // unreadable right now — retried on the next sync
       }
-      const fileDate = new Date(st.mtimeMs).toISOString().slice(0, 10);
-      const chunks = chunkSessionJsonl(jsonl, fileDate).map((c) => ({
-        ...c,
-        heading: s.title, // session title is the citation heading
-      }));
-      this.replaceSource(db, "session", s.sessionId, stamp, chunks);
     }
     this.pruneSources(db, "session", seen);
+  }
+
+  private sessionState(db: Database, sessionId: string): SessionState | null {
+    return db
+      .query(
+        "SELECT stamp, indexed_bytes, tail_offset, tail_chunks, tail_sig FROM sources WHERE path = ?",
+      )
+      .get(sessionId) as SessionState | null;
+  }
+
+  private indexSession(
+    db: Database,
+    s: SessionSource,
+    st: fs.Stats,
+    stamp: string,
+    state: SessionState | null,
+  ): void {
+    const fd = fs.openSync(s.jsonlPath, "r");
+    try {
+      const incremental =
+        state?.indexed_bytes != null &&
+        state.tail_offset != null &&
+        state.tail_chunks != null &&
+        st.size >= state.indexed_bytes &&
+        state.tail_sig ===
+          lineSignature(readBytes(fd, state.tail_offset, SIG_BYTES));
+      const from = incremental ? (state.tail_offset as number) : 0;
+      const bytes = readBytes(fd, from, st.size - from);
+      const fileDate = new Date(st.mtimeMs).toISOString().slice(0, 10);
+      const parsed = parseSessionExchanges(bytes, fileDate, from);
+      const chunks = parsed.chunks.map((c) => ({ ...c, heading: s.title }));
+      // Next time, restart at the last exchange: its reply may still grow.
+      const tailOffset = parsed.lastExchangeOffset ?? from;
+      const settled = chunks.filter((c) => c.offset < tailOffset).length;
+      const insert = db.query(
+        "INSERT INTO chunks (source_type, source_path, heading, date, body) VALUES ('session', ?, ?, ?, ?)",
+      );
+      db.transaction(() => {
+        let pending = chunks;
+        if (!incremental) {
+          db.query("DELETE FROM chunks WHERE source_path = ?").run(s.sessionId);
+        } else {
+          // Chunks already stored from the re-read region: keep the ones
+          // that came out identical (and their vectors), replace the rest.
+          const stored = db
+            .query(
+              "SELECT id, body FROM chunks WHERE source_path = ? ORDER BY id LIMIT -1 OFFSET ?",
+            )
+            .all(s.sessionId, state.tail_chunks as number) as {
+            id: number;
+            body: string;
+          }[];
+          let same = 0;
+          while (
+            same < stored.length &&
+            same < chunks.length &&
+            stored[same].body === chunks[same].body
+          )
+            same++;
+          const drop = db.query("DELETE FROM chunks WHERE id = ?");
+          for (const row of stored.slice(same)) drop.run(row.id);
+          pending = chunks.slice(same);
+          db.query(
+            "UPDATE chunks SET heading = ? WHERE source_path = ? AND heading != ?",
+          ).run(s.title, s.sessionId, s.title);
+        }
+        for (const c of pending)
+          insert.run(s.sessionId, c.heading, c.date, c.body);
+        db.query(
+          `INSERT OR REPLACE INTO sources (path, type, stamp, indexed_bytes, tail_offset, tail_chunks, tail_sig)
+           VALUES (?, 'session', ?, ?, ?, ?, ?)`,
+        ).run(
+          s.sessionId,
+          stamp,
+          from + parsed.consumed,
+          tailOffset,
+          (incremental ? (state.tail_chunks as number) : 0) + settled,
+          lineSignature(
+            bytes.subarray(tailOffset - from, tailOffset - from + SIG_BYTES),
+          ),
+        );
+      })();
+    } finally {
+      fs.closeSync(fd);
+    }
   }
 
   private sourceStamp(db: Database, sourcePath: string): string | null {
@@ -712,6 +864,54 @@ export class MemoryIndexService {
     }
     return total;
   }
+}
+
+/** Where incremental session indexing left off (null columns: indexed
+ *  before incremental indexing existed — the next change re-reads it whole). */
+type SessionState = {
+  stamp: string;
+  /** Bytes of complete lines read so far; a smaller file was rewritten. */
+  indexed_bytes: number | null;
+  /** Byte offset where the last indexed exchange began. */
+  tail_offset: number | null;
+  /** Stored chunks that come before tail_offset. */
+  tail_chunks: number | null;
+  /** lineSignature of the line at tail_offset. */
+  tail_sig: string | null;
+};
+
+/** Columns added after the first release: CREATE IF NOT EXISTS won't add
+ *  them to an existing memory.db. */
+function migrate(db: Database): void {
+  const cols = new Set(
+    (db.query("PRAGMA table_info(sources)").all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  for (const [name, type] of [
+    ["indexed_bytes", "INTEGER"],
+    ["tail_offset", "INTEGER"],
+    ["tail_chunks", "INTEGER"],
+    ["tail_sig", "TEXT"],
+  ])
+    if (!cols.has(name))
+      db.exec(`ALTER TABLE sources ADD COLUMN ${name} ${type}`);
+}
+
+/** How much of the line at tail_offset its signature covers. */
+const SIG_BYTES = 256;
+
+/** Identifies the line starting at these bytes (up to its newline, at most
+ *  SIG_BYTES), so a rewritten file is noticed even when it didn't shrink. */
+function lineSignature(bytes: Uint8Array): string {
+  const nl = bytes.indexOf(0x0a);
+  return Bun.hash(nl === -1 ? bytes : bytes.subarray(0, nl)).toString(36);
+}
+
+function readBytes(fd: number, position: number, length: number): Uint8Array {
+  const buf = Buffer.alloc(Math.max(0, length));
+  const n = length > 0 ? fs.readSync(fd, buf, 0, length, position) : 0;
+  return buf.subarray(0, n);
 }
 
 function toFloat32(blob: Uint8Array): Float32Array {

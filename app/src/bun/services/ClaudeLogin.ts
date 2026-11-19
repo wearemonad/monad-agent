@@ -20,7 +20,7 @@ export class ClaudeLogin {
   private submitted = false;
 
   constructor(
-    private resolveBinary: () => string,
+    private resolveBinary: () => string | Promise<string>,
     /** Called when a sign-in finishes (either way) so the app can refresh. */
     private onChanged: (status: ClaudeAuthStatus) => void = () => {},
     /** Called when the CLI finishes WITHOUT a pasted code — the browser tab
@@ -38,7 +38,7 @@ export class ClaudeLogin {
   async status(): Promise<ClaudeAuthStatus> {
     let bin: string;
     try {
-      bin = this.resolveBinary();
+      bin = await this.resolveBinary();
     } catch (e) {
       return { loggedIn: false, error: String((e as Error).message ?? e) };
     }
@@ -69,7 +69,7 @@ export class ClaudeLogin {
     this.cancel();
     let bin: string;
     try {
-      bin = this.resolveBinary();
+      bin = await this.resolveBinary();
     } catch (e) {
       return { ok: false, error: String((e as Error).message ?? e) };
     }

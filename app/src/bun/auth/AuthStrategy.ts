@@ -1,8 +1,13 @@
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
-import { execSync } from "node:child_process";
 import type { AuthMode } from "../../shared/ipc";
+import {
+  afterShellPath,
+  checkCliLookup,
+  findOnPath,
+  shellPathPending,
+} from "../services/shellPath";
 
 export interface AuthStrategy {
   id: AuthMode;
@@ -25,7 +30,11 @@ export class SubscriptionCliAuth implements AuthStrategy {
   id = "subscription-cli" as const;
   private binaryPath: string | null = null;
 
-  constructor(private getOverridePath?: () => string | undefined) {}
+  constructor(
+    private getOverridePath?: () => string | undefined,
+    /** The login-shell PATH probe while it runs (injectable for tests). */
+    private pathPending: () => Promise<void> | null = shellPathPending,
+  ) {}
 
   /** Drop the memoized path so the next resolve looks at the disk again —
    *  a re-check must be able to see a CLI that moved, vanished, or appeared. */
@@ -46,10 +55,10 @@ export class SubscriptionCliAuth implements AuthStrategy {
     if (this.binaryPath) return this.binaryPath;
     const candidates = [
       process.env.MONAD_CLAUDE_BIN,
-      path.join(os.homedir(), ".local/bin/claude"),
+      path.join(process.env.HOME || os.homedir(), ".local/bin/claude"),
       "/opt/homebrew/bin/claude",
       "/usr/local/bin/claude",
-      path.join(os.homedir(), ".claude/local/claude"),
+      path.join(process.env.HOME || os.homedir(), ".claude/local/claude"),
     ].filter(Boolean) as string[];
     for (const c of candidates) {
       if (fs.existsSync(c)) {
@@ -57,25 +66,31 @@ export class SubscriptionCliAuth implements AuthStrategy {
         return c;
       }
     }
-    // GUI apps don't inherit shell PATH on macOS; ask a login shell.
-    try {
-      const found = execSync('zsh -ilc "which claude"', {
-        encoding: "utf8",
-      }).trim();
-      if (found && fs.existsSync(found)) {
-        this.binaryPath = found;
-        return found;
-      }
-    } catch {
-      // fall through to validate() error
+    // GUI apps don't inherit the shell PATH on macOS; fixProcessPath merges
+    // the login shell's PATH in (async, at boot), so a plain PATH scan finds
+    // version-manager installs without spawning a shell here.
+    const found = findOnPath("claude");
+    if (found) {
+      this.binaryPath = found;
+      return found;
     }
     throw new Error(
       "Claude Code CLI not found. Install it and log in (https://claude.com/claude-code), or switch Monad to API-key mode.",
     );
   }
 
+  /** See checkCliLookup: no spurious "not found" in the first seconds
+   *  after a Finder launch, before the login-shell PATH is in. */
   validate(): void {
-    this.resolveBinary();
+    checkCliLookup(() => this.resolveBinary(), {
+      overridden: !!this.getOverridePath?.(),
+      pending: this.pathPending(),
+    });
+  }
+
+  /** resolveBinary, after the login-shell PATH is in. */
+  resolveBinaryAsync(): Promise<string> {
+    return afterShellPath(() => this.resolveBinary(), this.pathPending);
   }
 
   sdkOptions() {

@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { run, runChecked } from "./spawnAsync";
 
 const ACCOUNT = "monad";
 
@@ -23,18 +23,49 @@ function hasControlChars(value: string): boolean {
   return false;
 }
 
-/** Values already read (null = known absent), so hot paths — every image
- *  request reads all image-provider keys, every run its workspace env — stop
- *  paying a synchronous `security` spawn on the backend's only thread, where
- *  it stalls every streaming thread. Monad is the only writer of these items
- *  and keeps the cache in step through set/delete; a failed read (locked
- *  keychain, denied access) is never cached, so it is retried next time. */
+/** Values already read (null = known absent). Reads happen asynchronously —
+ *  `security` is a child process, and waiting on one synchronously stalls
+ *  bun's only thread and with it every streaming Thread — so the sync get()
+ *  answers from here alone. index.ts awaits prefetch() of every known item at
+ *  boot, before anything can ask. Monad is the only writer of these items and
+ *  keeps the cache in step through set/delete; a failed read (locked
+ *  keychain, denied access) is never cached, so the next load() retries. */
 const cache = new Map<string, string | null>();
+/** Reads in flight, so concurrent loads of one item share a spawn. */
+const pending = new Map<string, Promise<string | null>>();
+/** When a read last failed (locked keychain, denied access): get() waits
+ *  this long before trying again, rather than spawning on every call. */
+const failedAt = new Map<string, number>();
+const RETRY_FAILED_READ_MS = 30_000;
+
+async function readItem(service: string): Promise<string | null> {
+  const res = await run(
+    ["security", "find-generic-password", "-a", ACCOUNT, "-s", service, "-w"],
+    { timeout: 10_000 },
+  );
+  if (res.code === 0) {
+    const value = res.stdout.trim();
+    cache.set(service, value);
+    return value;
+  }
+  // Exit 44 = item genuinely not in the keychain (the common "not set" case).
+  // Any other status means the item may exist but the read failed (keychain
+  // locked, access denied) — log it so we don't mistakenly tell the user to
+  // configure a credential they already set.
+  if (res.code === 44) cache.set(service, null);
+  else {
+    failedAt.set(service, Date.now());
+    console.warn(
+      `[keychain] read failed for "${service}" (exit ${res.code ?? "killed"})`,
+    );
+  }
+  return null;
+}
 
 /** macOS Keychain-backed secret storage via the `security` CLI.
  *  Secrets never travel to the webview; args are passed as an array (no shell). */
 export const Keychain = {
-  set(service: string, secret: string): void {
+  async set(service: string, secret: string): Promise<void> {
     // The secret must never reach argv — `ps -ww` exposes argv to any same-user
     // process — which rules out a plain `-w <secret>`.
     //
@@ -42,68 +73,67 @@ export const Keychain = {
     // prompt, and the prompt is readpassphrase(3), which opens /dev/tty when
     // the process HAS a controlling terminal and ignores piped stdin entirely.
     // Running from a terminal (any `bun start` dev session) therefore blocked
-    // here forever on a prompt painted over the dev log — and because this call
-    // is synchronous, it froze the whole backend: the Google connect that
-    // triggered it never finished and the UI sat on "Waiting for browser
-    // sign-in…" with no error, since no further event could ever be emitted.
+    // there forever on a prompt painted over the dev log.
     //
     // Interactive mode takes the COMMAND ITSELF on stdin, so the secret is
     // neither in argv nor routed through the tty. Failures still surface: a
-    // rejected command exits non-zero and execFileSync throws.
+    // rejected command exits non-zero and runChecked throws.
     if (hasControlChars(service))
       throw new Error("Service names may not contain control characters.");
     if (hasControlChars(secret))
       throw new Error("Secrets may not contain control characters.");
-    execFileSync("security", ["-i"], {
+    await runChecked(["security", "-i"], {
       input: `add-generic-password -U -a ${quote(ACCOUNT)} -s ${quote(service)} -w ${quote(secret)}\n`,
-      stdio: ["pipe", "ignore", "ignore"],
-      // Nothing here should ever block, but a sync call on the backend's only
-      // thread is the wrong place to find out otherwise.
       timeout: 10_000,
     });
     cache.set(service, secret);
   },
 
+  /** The cached value: never spawns. null when absent or not loaded yet — a
+   *  cold miss starts a background load, so a later call sees the value. */
   get(service: string): string | null {
     const known = cache.get(service);
     if (known !== undefined) return known;
-    try {
-      const value = execFileSync(
-        "security",
-        ["find-generic-password", "-a", ACCOUNT, "-s", service, "-w"],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-      ).trim();
-      cache.set(service, value);
-      return value;
-    } catch (e) {
-      // Exit 44 = item genuinely not in the keychain (the common "not set"
-      // case). Any other status means the item may exist but the read failed
-      // (keychain locked, access denied) — log it so we don't mistakenly tell
-      // the user to configure a credential they already set.
-      const status = (e as { status?: number }).status;
-      if (status === 44) cache.set(service, null);
-      else {
-        console.warn(
-          `[keychain] read failed for "${service}" (exit ${status ?? "?"})`,
-        );
-      }
-      return null;
-    }
+    const failed = failedAt.get(service);
+    if (failed === undefined || Date.now() - failed > RETRY_FAILED_READ_MS)
+      void Keychain.load(service);
+    return null;
   },
 
-  delete(service: string): void {
-    cache.set(service, null);
-    try {
-      execFileSync(
-        "security",
-        ["delete-generic-password", "-a", ACCOUNT, "-s", service],
-        {
-          stdio: "ignore",
-        },
-      );
-    } catch {
-      // absent is fine
+  /** Read through the cache, spawning `security` (async) on a miss. */
+  load(service: string): Promise<string | null> {
+    const known = cache.get(service);
+    if (known !== undefined) return Promise.resolve(known);
+    let p = pending.get(service);
+    if (!p) {
+      p = readItem(service)
+        .catch((e) => {
+          failedAt.set(service, Date.now());
+          console.warn(
+            `[keychain] read failed for "${service}": ${(e as Error).message}`,
+          );
+          return null;
+        })
+        .finally(() => pending.delete(service));
+      pending.set(service, p);
     }
+    return p;
+  },
+
+  /** Warm the cache for every item the app knows about, in parallel. */
+  async prefetch(services: string[]): Promise<void> {
+    await Promise.all(services.map((s) => Keychain.load(s)));
+  },
+
+  async delete(service: string): Promise<void> {
+    cache.set(service, null);
+    // Absent is fine: a non-zero exit is ignored.
+    await run(
+      ["security", "delete-generic-password", "-a", ACCOUNT, "-s", service],
+      {
+        timeout: 10_000,
+      },
+    ).catch(() => {});
   },
 };
 
@@ -114,4 +144,6 @@ export const KeychainServices = {
   driveRefreshToken: (workspaceId: string) => `monad-drive-${workspaceId}`,
   /** Settings → Image models, one key per provider. */
   imageApiKey: (provider: string) => `monad-image-${provider}-api-key`,
+  /** Per-workspace credentials entered in Settings (WorkspaceEnvStore). */
+  workspaceEnv: (workspaceId: string) => `monad-wsenv-${workspaceId}`,
 };

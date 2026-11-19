@@ -16,7 +16,7 @@ let svc: GoogleDriveService;
 beforeEach(() => {
   deleted = [];
   events = [];
-  Keychain.delete = (service: string) => {
+  Keychain.delete = async (service: string) => {
     deleted.push(service);
   };
   svc = new GoogleDriveService({} as never, (e) => events.push(e));

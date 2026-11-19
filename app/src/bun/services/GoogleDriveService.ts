@@ -135,8 +135,9 @@ export class GoogleDriveService {
   }
 
   disconnect(workspaceId: string): void {
-    Keychain.delete(KeychainServices.driveRefreshToken(workspaceId));
     this.clients.delete(workspaceId);
+    // The cache flips to "absent" synchronously; the Keychain write follows.
+    void Keychain.delete(KeychainServices.driveRefreshToken(workspaceId));
   }
 
   /** OAuth2 credentials for this workspace, seeded from the Keychain refresh
@@ -172,6 +173,10 @@ export class GoogleDriveService {
         Keychain.set(
           KeychainServices.driveRefreshToken(workspaceId),
           tokens.refresh_token,
+        ).catch((e) =>
+          console.error(
+            `[drive] could not store the rotated refresh token: ${(e as Error).message}`,
+          ),
         );
       }
     });
@@ -309,7 +314,7 @@ export class GoogleDriveService {
         });
         return tokens;
       },
-      finish: (tokens) => {
+      finish: async (tokens) => {
         if (!tokens.refresh_token)
           throw new Error("Google did not return a refresh token.");
         // Google's consent screen has per-scope checkboxes; catch an incomplete
@@ -322,7 +327,7 @@ export class GoogleDriveService {
               "Reconnect and tick every checkbox on Google's permission screen (“Select all”).",
           );
         }
-        Keychain.set(
+        await Keychain.set(
           KeychainServices.driveRefreshToken(workspaceId),
           tokens.refresh_token,
         );

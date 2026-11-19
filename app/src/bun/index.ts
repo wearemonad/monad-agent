@@ -36,6 +36,8 @@ import { PermissionBroker } from "./services/PermissionBroker";
 import { SessionStore } from "./services/SessionStore";
 import { CONFIG_DIR, WorkspaceManager } from "./services/WorkspaceManager";
 import { SettingsStore } from "./services/SettingsStore";
+import { Keychain, KeychainServices } from "./services/Keychain";
+import { run as runCommand, runChecked } from "./services/spawnAsync";
 import { AgentSessions } from "./services/AgentSession";
 import { GoogleDriveService } from "./services/GoogleDriveService";
 import { GoogleOAuth } from "./services/GoogleOAuth";
@@ -120,8 +122,7 @@ import {
   type CodexAuthStrategy,
 } from "./auth/CodexAuth";
 import { OLLAMA_URL, OllamaService } from "./services/OllamaService";
-import { OnnxEmbedder } from "./services/OnnxEmbedder";
-import { MemoryIndexService } from "./services/MemoryIndexService";
+import { MemoryIndex } from "./services/MemoryIndex";
 import {
   GRAPH_BACKFILL_VERSION,
   backfillDue,
@@ -138,7 +139,6 @@ import {
   appendCapture,
   buildReviewPrompt,
   bumpReviewCounter,
-  condenseLastExchange,
   resetReviewCounter,
 } from "./services/memoryCapture";
 import { sessionDelivered, sessionFilePath } from "./services/sessionFiles";
@@ -157,6 +157,7 @@ import { backgroundLoops, type LoopSpec } from "./runtime/BackgroundLoops";
 import { BackgroundRuns } from "./services/BackgroundRuns";
 import { schedulerLoops } from "./services/SchedulerLoop";
 import { PerfMonitor } from "./services/PerfMonitor";
+import { ForegroundGate } from "./services/ForegroundGate";
 import {
   appendFakeTurn,
   isFakeSessionId,
@@ -168,7 +169,7 @@ import {
 // Before anything else: GUI-launched apps get launchd's bare PATH, which hides
 // npx/uvx/docker from Bun.which, connector health checks, and every MCP server
 // the agent spawns. Merge in the login shell's PATH first.
-fixProcessPath();
+void fixProcessPath();
 // Console → ~/Library/Logs/Monad/monad.log: a Finder-launched app's stdout is
 // discarded, so this file is the only record of what the app did.
 installAppLog();
@@ -213,6 +214,16 @@ const perf = new PerfMonitor({
 });
 perf.start();
 
+// Holds background work (memory sync, Drive/Gmail sync, folder polls,
+// catch-up jobs…) back while the user is streaming or just opened a Thread,
+// and for the first minute after launch (PARALLEL-THREADS-PR2, 2d).
+const foreground = new ForegroundGate({
+  // Lazy: the agent services are built further down. A Turn they no longer
+  // run stops holding background work back even if its end event was lost.
+  isTurnActive: (runId) =>
+    agent.isTurnActive(runId) || codexAgent.isTurnActive(runId),
+});
+
 // Fake-stream harness, dev builds only: MONAD_FAKE_AGENT=N seeds N fake
 // Threads (~40 messages each) and serves interactive runs with a
 // FakeAgentSession; MONAD_PERF_STRESS=<seconds> also has the webview click
@@ -251,6 +262,26 @@ setActiveWorkspaceProvider(() => workspaces.active()?.id ?? null);
 setNativeNotifier((n) => Utils.showNotification(n));
 const sessions = new SessionStore();
 
+/** The Keychain items a workspace owns (Google token, Settings-entered env). */
+function workspaceKeychainServices(workspaceId: string): string[] {
+  return [
+    KeychainServices.driveRefreshToken(workspaceId),
+    KeychainServices.workspaceEnv(workspaceId),
+  ];
+}
+// Every secret the app reads, loaded in parallel before anything can ask:
+// the getters answer from this cache, so no `security` spawn ever waits on
+// bun's main thread (PARALLEL-THREADS-PR2, 2c).
+// Capped: a locked keychain must not hold up launch — items still loading
+// read as unset until they land.
+await Promise.race([
+  Keychain.prefetch([
+    ...SettingsStore.keychainServices(),
+    ...workspaces.list().flatMap((ws) => workspaceKeychainServices(ws.id)),
+  ]),
+  Bun.sleep(1_500),
+]);
+
 const ollama = new OllamaService();
 const subscriptionAuth = new SubscriptionCliAuth(
   () => settings.claudeBinaryPath,
@@ -264,7 +295,7 @@ const localAuth = new LocalOllamaAuth(
 
 /** In-app `claude auth login` for subscription mode (see ClaudeLogin). */
 const claudeLogin = new ClaudeLogin(
-  () => subscriptionAuth.resolveBinary(),
+  () => subscriptionAuth.resolveBinaryAsync(),
   (status) => {
     send()?.claudeAuthChanged(status);
     // Warm CLI processes gave up on the old token; the next message must
@@ -403,7 +434,7 @@ const appRuntime = makeAppRuntime(
         // The async check: an image request must never park the backend
         // thread (and with it every other thread's stream) on a spawnSync.
         cli: {
-          resolveBinary: () => codexCli.resolveBinary(),
+          resolveBinary: () => codexCli.resolveBinaryAsync(),
           status: () => codexCli.statusAsync(),
         },
         runTurn: sdkCodexTurn({
@@ -479,9 +510,20 @@ const drive = new GoogleDriveService(
 );
 
 // In-process embeddings (transformers.js + ONNX) — no external dependency;
-// the model downloads once on first use. See OnnxEmbedder for the fallback story.
-const embedder = new OnnxEmbedder();
-const memoryIndex = new MemoryIndexService(embedder);
+// the model downloads once on first use. See OnnxEmbedder for the fallback
+// story. All of it — indexing, SQLite, embeddings — runs in a Bun Worker
+// (workers/memoryIndex.worker.ts), off the thread that streams Threads.
+const memoryIndex = new MemoryIndex({ embedder: "onnx" });
+
+/** Sessions with an interactive Turn streaming in this workspace: the index
+ *  leaves them alone until the Turn ends (their JSONL is still growing). */
+function activeTurnSessions(workspaceId: string): string[] {
+  const ids: string[] = [];
+  for (const run of interactiveRuns.values())
+    if (run.workspaceId === workspaceId && run.sessionId)
+      ids.push(run.sessionId);
+  return ids;
+}
 
 /** Freshen a workspace's memory index — incremental (mtime-stamped), so it's
  *  cheap when nothing changed. Failures degrade recall, never break callers.
@@ -489,18 +531,35 @@ const memoryIndex = new MemoryIndexService(embedder);
 function syncMemory(workspaceId: string, workspacePath: string): Promise<void> {
   return perf.run("syncMemory", async () => {
     try {
-      memoryIndex.syncKnowledge(workspacePath);
-      memoryIndex.syncSessions(
+      await memoryIndex.sync(
         workspacePath,
         await sessions.listForIndex(workspacePath, workspaceId),
-      );
-      void perf.run("memory:embed", () =>
-        memoryIndex.backfillEmbeddings(workspacePath),
+        activeTurnSessions(workspaceId),
       );
     } catch (e) {
       console.error(`[memory] sync failed: ${(e as Error).message}`);
     }
   });
+}
+
+/** Background freshening after a Turn or an ingest: waits for the app to go
+ *  idle, and calls made while one is already waiting share it — three Turns
+ *  finishing close together cause one sync, not three. (Agent tools and the
+ *  user's own actions call syncMemory directly: someone is waiting on them.) */
+const scheduledMemorySyncs = new Map<string, Promise<void>>();
+function scheduleMemorySync(
+  workspaceId: string,
+  workspacePath: string,
+): Promise<void> {
+  const waiting = scheduledMemorySyncs.get(workspaceId);
+  if (waiting) return waiting;
+  const next = foreground.whenIdle().then(() => {
+    // Leave the queue before syncing: a Turn ending mid-sync schedules anew.
+    scheduledMemorySyncs.delete(workspaceId);
+    return syncMemory(workspaceId, workspacePath);
+  });
+  scheduledMemorySyncs.set(workspaceId, next);
+  return next;
 }
 
 /** Workspace-scoped MCP config: the workspace's own .mcp.json (with ${VAR}
@@ -772,7 +831,7 @@ function handleIngestEvent(event: AgentStreamEvent): boolean {
   pushIngestStatus();
   // Ingest wrote/updated knowledge docs — fold them into the memory index.
   const ws = workspaces.get(ctx.workspaceId);
-  if (ws) void syncMemory(ws.id, ws.path);
+  if (ws) void scheduleMemorySync(ws.id, ws.path);
   return true;
 }
 
@@ -785,7 +844,13 @@ const costs = new CostLedger();
  *  promptSnippet identifies the run in the away-from-app done notification. */
 const interactiveRuns = new Map<
   string,
-  { workspaceId: string; workspacePath: string; promptSnippet: string }
+  {
+    workspaceId: string;
+    workspacePath: string;
+    promptSnippet: string;
+    /** Known from the start when resuming; from run-started otherwise. */
+    sessionId?: string;
+  }
 >();
 /** Hidden memory-review runs: their stream never reaches the chat; completion
  *  diffs knowledge/ into the review queue (working-memory edits included). */
@@ -810,12 +875,9 @@ function captureInteractiveRun(
   if (codexThreads.has(ctx.workspacePath, sessionId)) return;
   const capture = async () => {
     try {
-      const jsonl = fs.readFileSync(
+      // Reading the whole JSONL and condensing it happens in the worker.
+      const exchange = await memoryIndex.condenseLastExchange(
         sessionFilePath(ctx.workspacePath, sessionId),
-        "utf8",
-      );
-      const exchange = condenseLastExchange(
-        jsonl,
         new Date().toISOString().slice(0, 10),
       );
       if (exchange) {
@@ -828,7 +890,7 @@ function captureInteractiveRun(
           );
         }
       }
-      await syncMemory(ctx.workspaceId, ctx.workspacePath);
+      await scheduleMemorySync(ctx.workspaceId, ctx.workspacePath);
       maybeStartMemoryReview(ctx);
     } catch (e) {
       console.error(`[memory] capture failed: ${(e as Error).message}`);
@@ -1026,7 +1088,7 @@ function handleGraphBackfillEvent(event: AgentStreamEvent): boolean {
     );
   if (queued.length && workspaces.active()?.id === ws.id)
     send()?.reviewChanged({ items: workspaces.listReview(ws.id) });
-  void syncMemory(ws.id, ws.path);
+  void scheduleMemorySync(ws.id, ws.path);
   pushBackground();
   return true;
 }
@@ -1066,6 +1128,10 @@ function routeAgentEvent(event: AgentStreamEvent): void {
   // ingest, memory-review and scheduled runs are background-owned — their
   // streams become notifications/panel updates instead of bleeding into
   // the open chat
+  if (event.kind === "run-started") {
+    const run = interactiveRuns.get(event.runId);
+    if (run && event.sessionId) run.sessionId = event.sessionId;
+  }
   if (handleIngestEvent(event)) return;
   if (handleMemoryReviewEvent(event)) return;
   if (handleGraphBackfillEvent(event)) return;
@@ -1076,6 +1142,7 @@ function routeAgentEvent(event: AgentStreamEvent): void {
   // while the app is frontmost, so these are quiet when focused. A
   // deliberate Stop stays silent entirely.
   if (event.kind === "run-finished" || event.kind === "run-error") {
+    foreground.turnEnded(event.runId);
     const ctx = interactiveRuns.get(event.runId);
     if (ctx) {
       const wsName = workspaces.get(ctx.workspaceId)?.name ?? "Monad";
@@ -1199,6 +1266,8 @@ const scheduler = new SchedulerService(
   // Why a due job didn't start (offline, busy, claimed, interrupted) lands in
   // the workspace's .monad/activity.jsonl for diagnosis.
   (workspacePath, entry) => activity.append(workspacePath, entry),
+  // Catch-up jobs wait for a quiet moment; jobs due right now never do.
+  () => foreground.isIdle(),
 );
 scheduler.start();
 
@@ -1565,7 +1634,7 @@ async function doHealthChecks(): Promise<HealthIssue[]> {
   }
   // Same for the OpenAI subscription: it rides the Codex CLI's ChatGPT login.
   if (settings.enabledProviders.includes("openai-subscription")) {
-    const status = codexCli.status();
+    const status = await codexCli.statusAsync();
     if (!status.loggedIn) {
       issues.push({
         workspaceId: "",
@@ -1580,12 +1649,13 @@ async function doHealthChecks(): Promise<HealthIssue[]> {
   // Semantic memory search needs the local embedding model (a one-time
   // download). A failed download — typically an offline first run — degrades
   // search to keyword-only silently, so surface it as a soft warning instead.
-  if (embedder.status === "failed") {
+  const memory = await memoryIndex.status().catch(() => null);
+  if (memory?.embedder === "failed") {
     issues.push({
       workspaceId: "",
       workspaceName: "Memory",
       source: "embeddings",
-      message: `Semantic memory search is inactive — the embedding model download failed (${embedder.lastError.slice(0, 80)}). Keyword search still works; the download retries automatically.`,
+      message: `Semantic memory search is inactive — the embedding model download failed (${memory.lastError.slice(0, 80)}). Keyword search still works; the download retries automatically.`,
     });
   }
   // Local-model mode depends on the Ollama server; a stopped server means
@@ -1788,7 +1858,9 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
               workspaceId: ws.id,
               workspacePath: ws.path,
               promptSnippet: prompt.slice(0, 80),
+              sessionId: resumeSessionId,
             });
+            foreground.turnStarted(runId);
             return { runId };
           }
           const id = provider ?? settings.authMode;
@@ -1823,7 +1895,9 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
             workspaceId: ws.id,
             workspacePath: ws.path,
             promptSnippet: prompt.replace(/\s+/g, " ").trim().slice(0, 80),
+            sessionId: resumeSessionId,
           });
+          foreground.turnStarted(runId);
           return { runId };
         } catch (e) {
           return { error: String((e as Error).message ?? e) };
@@ -1888,6 +1962,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         return { byWorkspace };
       },
       getSessionHistory: async ({ sessionId }) => {
+        foreground.threadOpened();
         const cwd = activeWs().path;
         const codexThread = codexThreads.read(cwd, sessionId);
         if (codexThread) return { items: codexThread.items };
@@ -1954,7 +2029,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         }
         return { ok };
       },
-      addWorkspace: ({ path: wsPath, create }) => {
+      addWorkspace: async ({ path: wsPath, create }) => {
         try {
           const workspace = create
             ? workspaces.create(
@@ -1963,6 +2038,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
                 create.templateId,
               )
             : workspaces.add(wsPath!);
+          await Keychain.prefetch(workspaceKeychainServices(workspace.id));
           pushWorkspaces();
           return { workspace };
         } catch (e) {
@@ -1971,7 +2047,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
       },
       removeWorkspace: ({ id }) => {
         drive.disconnect(id); // clear tokens for unregistered workspaces
-        wsEnv.deleteAll(id); // and Settings-entered credentials
+        void wsEnv.deleteAll(id); // and Settings-entered credentials
         const ok = workspaces.remove(id);
         pushWorkspaces();
         return { ok };
@@ -2001,7 +2077,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           };
         }
         drive.disconnect(id);
-        wsEnv.deleteAll(id);
+        void wsEnv.deleteAll(id);
         workspaces.remove(id);
         pushWorkspaces();
         return { ok: true };
@@ -2062,20 +2138,20 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         return picked ? { path: picked } : {};
       },
 
-      exportSkills: ({ workspaceId, destDir }) => {
+      exportSkills: async ({ workspaceId, destDir }) => {
         try {
           const ws = workspaces.get(workspaceId);
           if (!ws) throw new Error("Unknown workspace.");
-          return { path: packs.exportSkills(ws.path, ws.name, destDir) };
+          return { path: await packs.exportSkills(ws.path, ws.name, destDir) };
         } catch (e) {
           return { error: String((e as Error).message ?? e) };
         }
       },
-      importSkills: ({ workspaceId, source }) => {
+      importSkills: async ({ workspaceId, source }) => {
         try {
           const ws = workspaces.get(workspaceId);
           if (!ws) throw new Error("Unknown workspace.");
-          const res = packs.importSkills(ws.path, source);
+          const res = await packs.importSkills(ws.path, source);
           if (res.added.length) {
             activity.append(ws.path, {
               kind: "capture",
@@ -2091,19 +2167,22 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           };
         }
       },
-      exportWorkspace: ({ workspaceId, destDir }) => {
+      exportWorkspace: async ({ workspaceId, destDir }) => {
         try {
           const ws = workspaces.get(workspaceId);
           if (!ws) throw new Error("Unknown workspace.");
-          return { path: packs.exportWorkspace(ws.path, ws.name, destDir) };
+          return {
+            path: await packs.exportWorkspace(ws.path, ws.name, destDir),
+          };
         } catch (e) {
           return { error: String((e as Error).message ?? e) };
         }
       },
-      importWorkspace: ({ zipPath, parentDir, name }) => {
+      importWorkspace: async ({ zipPath, parentDir, name }) => {
         try {
-          const target = packs.importWorkspace(zipPath, parentDir, name);
+          const target = await packs.importWorkspace(zipPath, parentDir, name);
           const workspace = workspaces.add(target, name);
+          await Keychain.prefetch(workspaceKeychainServices(workspace.id));
           pushWorkspaces();
           return { workspace };
         } catch (e) {
@@ -2136,11 +2215,12 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         if (recheck) {
           subscriptionAuth.forgetBinary();
           codexCli.forgetBinary();
+          codexCli.forgetStatus();
         }
         return settingsView();
       },
-      updateSettings: (patch) => {
-        settings.update(patch);
+      updateSettings: async (patch) => {
+        await settings.update(patch);
         if (patch.perfDiagnostics !== undefined) {
           perf.setEnabled(patch.perfDiagnostics);
         }
@@ -2155,8 +2235,8 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
             if (id === "openai-api-key") {
               return { ok: true, message: "OpenAI API key configured." };
             }
-            const found = `Codex CLI found: ${codexCli.resolveBinary()}`;
-            const status = codexCli.status();
+            const found = `Codex CLI found: ${await codexCli.resolveBinaryAsync()}`;
+            const status = await codexCli.statusAsync({ fresh: true });
             if (status.loggedIn) {
               return {
                 ok: true,
@@ -2184,7 +2264,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           if (id === "api-key")
             return { ok: true, message: "API key configured." };
           const status = await claudeLogin.status();
-          const found = `Claude CLI found: ${subscriptionAuth.resolveBinary()}`;
+          const found = `Claude CLI found: ${await subscriptionAuth.resolveBinaryAsync()}`;
           if (status.loggedIn) {
             return {
               ok: true,
@@ -2201,19 +2281,19 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
       },
 
       claudeAuthStatus: async () => claudeLogin.status(),
-      codexAuthStatus: async () => codexCli.status(),
+      codexAuthStatus: async () => codexCli.statusAsync(),
       codexLogin: async () => {
         try {
-          await runCodexLogin(codexCli.resolveBinary());
+          await runCodexLogin(await codexCli.resolveBinaryAsync());
           scheduleHealthRecheck();
-          const status = codexCli.status();
+          const status = await codexCli.statusAsync({ fresh: true });
           return status.loggedIn
             ? { ok: true, status }
             : { ok: false, status, error: "Sign-in didn't complete." };
         } catch (e) {
           return {
             ok: false,
-            status: codexCli.status(),
+            status: await codexCli.statusAsync(),
             error: String((e as Error).message ?? e),
           };
         }
@@ -2242,7 +2322,8 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           .then(() => {
             // First model in the library becomes the local default — the user
             // can change it, but "download → it works" must be the happy path.
-            if (!settings.localModel) settings.update({ localModel: model });
+            if (!settings.localModel)
+              void settings.update({ localModel: model });
             send()?.ollamaPullProgress({ model, status: "done", done: true });
           })
           .catch((e) =>
@@ -2894,7 +2975,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           return { ok: false, error: String((e as Error).message ?? e) };
         }
       },
-      knowledgeGraph: ({ workspaceId, includeDocs }) => {
+      knowledgeGraph: async ({ workspaceId, includeDocs }) => {
         const ws = workspaces.get(workspaceId);
         if (!ws)
           return {
@@ -2906,9 +2987,9 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         try {
           // Knowledge only (not sessions/embeddings): incremental and cheap,
           // and all the graph is built from.
-          memoryIndex.syncKnowledge(ws.path);
+          await memoryIndex.sync(ws.path);
           return {
-            ...memoryIndex.graph(ws.path).view({ includeDocs }),
+            ...(await memoryIndex.graph(ws.path)).view({ includeDocs }),
             backfill: backfillStatus(
               readBackfillState(ws.path),
               graphBackfillActiveFor(ws.id),
@@ -2961,18 +3042,18 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         return mcpConfig.test(ws.path, name, wsEnv.get(workspaceId));
       },
 
-      wsEnvSet: ({ workspaceId, name, value }) => {
+      wsEnvSet: async ({ workspaceId, name, value }) => {
         try {
           if (!value.trim()) throw new Error("Value is empty.");
-          wsEnv.set(workspaceId, name, value.trim());
+          await wsEnv.set(workspaceId, name, value.trim());
           scheduleHealthRecheck();
           return { ok: true };
         } catch (e) {
           return { ok: false, error: String((e as Error).message) };
         }
       },
-      wsEnvClear: ({ workspaceId, name }) => {
-        wsEnv.clear(workspaceId, name);
+      wsEnvClear: async ({ workspaceId, name }) => {
+        await wsEnv.clear(workspaceId, name);
         scheduleHealthRecheck();
         return { ok: true };
       },
@@ -3080,16 +3161,13 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
 
 // macOS marketing version ("15.5"), probed once — os.release() only gives the
 // Darwin kernel version, which nobody recognises in an About box.
-const macosVersion = (() => {
-  try {
-    const out = Bun.spawnSync(["sw_vers", "-productVersion"])
-      .stdout.toString()
-      .trim();
-    return out ? `macOS ${out}` : `Darwin ${os.release()}`;
-  } catch {
-    return `Darwin ${os.release()}`;
-  }
-})();
+// Async and filled in the background: the Darwin fallback shows until it lands.
+let macosVersion = `Darwin ${os.release()}`;
+void runChecked(["sw_vers", "-productVersion"])
+  .then((out) => {
+    if (out.trim()) macosVersion = `macOS ${out.trim()}`;
+  })
+  .catch(() => {});
 
 function settingsView() {
   let resolved = "";
@@ -3156,26 +3234,26 @@ function revealLogs(): boolean {
 
 /** Help → Export Diagnostics… / Settings → Troubleshooting: zip the logs and
  *  scheduler state onto the Desktop and reveal it in Finder. */
-function runExportDiagnostics(): {
+async function runExportDiagnostics(): Promise<{
   ok: boolean;
   path?: string;
   error?: string;
-} {
+}> {
   try {
     const v = settingsView();
     let claudeCliVersion = "";
     if (v.resolvedClaudePath) {
       try {
-        claudeCliVersion = Bun.spawnSync([v.resolvedClaudePath, "--version"], {
-          timeout: 5_000,
-        })
-          .stdout.toString()
-          .trim();
+        claudeCliVersion = (
+          await runCommand([v.resolvedClaudePath, "--version"], {
+            timeout: 5_000,
+          })
+        ).stdout.trim();
       } catch {
         // unknown — the path alone still helps
       }
     }
-    const zip = exportDiagnostics({
+    const zip = await exportDiagnostics({
       about: {
         appVersion: v.appVersion,
         channel: v.channel,
@@ -3426,12 +3504,13 @@ ApplicationMenu.on("application-menu-clicked", (event: unknown) => {
   } else if (action === "check-for-updates") {
     void menuCheckForUpdate();
   } else if (action === "export-diagnostics") {
-    const res = runExportDiagnostics();
-    notify(
-      "Export Diagnostics",
-      res.ok
-        ? `Saved ${path.basename(res.path!)} — send that file to whoever is helping you.`
-        : `Couldn't export diagnostics: ${res.error}`,
+    void runExportDiagnostics().then((res) =>
+      notify(
+        "Export Diagnostics",
+        res.ok
+          ? `Saved ${path.basename(res.path!)} — send that file to whoever is helping you.`
+          : `Couldn't export diagnostics: ${res.error}`,
+      ),
     );
   } else if (action === "open-logs") {
     revealLogs();
@@ -3541,6 +3620,10 @@ function backgroundLoopSpecs(): LoopSpec[] {
 }
 
 function rawLoopSpecs(): LoopSpec[] {
+  // Gated loops wait for the user to pause (ForegroundGate; at most 10 min).
+  // Not gated: the scheduler tick (it holds back catch-up jobs itself) and
+  // the update check (async and tiny).
+  const whenIdle = () => foreground.whenIdle();
   return [
     // Scheduled jobs: a check 15 s after launch then every minute (abandoned
     // if wedged), and the 30-minute "alive" line. Lazy: the runtime — and so
@@ -3553,6 +3636,7 @@ function rawLoopSpecs(): LoopSpec[] {
       name: "drive-sync",
       firstDelay: 10_000,
       every: 5 * 60_000,
+      waitFor: whenIdle,
       run: syncAllConnected,
     },
     // Watched local folders poll faster — dropping a file there should feel live.
@@ -3560,6 +3644,7 @@ function rawLoopSpecs(): LoopSpec[] {
       name: "watch-folders",
       firstDelay: 12_000,
       every: 60_000,
+      waitFor: whenIdle,
       run: pollWatchFolders,
     },
     // Memory index warm-up: the first sync after install walks ALL history
@@ -3569,6 +3654,7 @@ function rawLoopSpecs(): LoopSpec[] {
     {
       name: "memory",
       firstDelay: 8_000,
+      waitFor: whenIdle,
       run: async () => {
         for (const ws of workspaces.list()) {
           await syncMemory(ws.id, ws.path);
@@ -3583,6 +3669,7 @@ function rawLoopSpecs(): LoopSpec[] {
       name: "graph-backfill",
       firstDelay: 60_000,
       every: 10 * 60_000,
+      waitFor: whenIdle,
       run: runDueGraphBackfill,
     },
     // Proactive health checks: shortly after launch, then daily. Bounded so a
@@ -3592,6 +3679,8 @@ function rawLoopSpecs(): LoopSpec[] {
       firstDelay: 30_000,
       every: 24 * 3600_000,
       timeout: 10 * 60_000,
+      // Its MCP smoke tests spawn npx servers — not while the user works.
+      waitFor: whenIdle,
       run: () => runHealthChecks().then(() => {}),
     },
     // Calendar lookahead for meeting-prep briefs (no-op unless enabled per workspace).
@@ -3600,6 +3689,7 @@ function rawLoopSpecs(): LoopSpec[] {
       firstDelay: 20_000,
       every: 5 * 60_000,
       timeout: 2 * 60_000,
+      waitFor: whenIdle,
       run: pollMeetingPrep,
     },
     {
@@ -3615,7 +3705,11 @@ function rawLoopSpecs(): LoopSpec[] {
 // for real. See createQuitGuard for what this can and can't guarantee.
 const quitGuard = createQuitGuard({
   dispose: async () => {
-    await Promise.all([appRuntime.dispose(), perf.stop()]);
+    await Promise.all([
+      appRuntime.dispose(),
+      perf.stop(),
+      memoryIndex.dispose(),
+    ]);
     if (fakeAgentThreads) {
       for (const ws of workspaces.list()) removeFakeThreads(ws.path);
     }

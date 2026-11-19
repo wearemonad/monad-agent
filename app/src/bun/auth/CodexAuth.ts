@@ -1,9 +1,14 @@
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
-import { execSync, spawnSync } from "node:child_process";
 import { Codex } from "@openai/codex-sdk";
 import type { CodexAuthStatus, OpenAIProviderId } from "../../shared/ipc";
+import {
+  afterShellPath,
+  checkCliLookup,
+  findOnPath,
+  shellPathPending,
+} from "../services/shellPath";
 
 /** How an OpenAI provider drives the Codex harness: which binary, which
  *  credentials. The OpenAI counterpart of AuthStrategy (which configures the
@@ -26,7 +31,24 @@ export interface CodexAuthStrategy {
 export class CodexCli {
   private binaryPath: string | null = null;
 
-  constructor(private getOverridePath?: () => string | undefined) {}
+  constructor(
+    private getOverridePath?: () => string | undefined,
+    /** The login-shell PATH probe while it runs (injectable for tests). */
+    private pathPending: () => Promise<void> | null = shellPathPending,
+  ) {}
+
+  /** resolveBinary for readiness checks — see checkCliLookup. */
+  validateBinary(): void {
+    checkCliLookup(() => this.resolveBinary(), {
+      overridden: !!this.getOverridePath?.(),
+      pending: this.pathPending(),
+    });
+  }
+
+  /** resolveBinary, after the login-shell PATH is in. */
+  resolveBinaryAsync(): Promise<string> {
+    return afterShellPath(() => this.resolveBinary(), this.pathPending);
+  }
 
   /** Drop the memoized path so the next resolve looks at the disk again. */
   forgetBinary(): void {
@@ -46,7 +68,7 @@ export class CodexCli {
     if (this.binaryPath) return this.binaryPath;
     const candidates = [
       process.env.MONAD_CODEX_BIN,
-      path.join(os.homedir(), ".local/bin/codex"),
+      path.join(process.env.HOME || os.homedir(), ".local/bin/codex"),
       "/opt/homebrew/bin/codex",
       "/usr/local/bin/codex",
     ].filter(Boolean) as string[];
@@ -56,26 +78,13 @@ export class CodexCli {
         return c;
       }
     }
-    // GUI apps don't inherit shell PATH on macOS; ask a login shell. This
-    // also finds version-manager shims (asdf, mise, nvm-installed npm globals).
-    try {
-      // An interactive shell runs the user's .zshrc, which may print its own
-      // output (prompt themes, greetings) — the path is the last absolute line.
-      const found =
-        execSync('zsh -ilc "which codex"', {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-        })
-          .split("\n")
-          .map((l) => l.trim())
-          .filter((l) => l.startsWith("/"))
-          .pop() ?? "";
-      if (found && fs.existsSync(found)) {
-        this.binaryPath = found;
-        return found;
-      }
-    } catch {
-      // fall through to the error below
+    // GUI apps don't inherit the shell PATH on macOS; fixProcessPath merges
+    // the login shell's PATH in (async, at boot) — which also carries
+    // version-manager shims (asdf, mise, nvm-installed npm globals).
+    const found = findOnPath("codex");
+    if (found) {
+      this.binaryPath = found;
+      return found;
     }
     throw new Error(
       "Codex CLI not found. Install it (npm i -g @openai/codex) and sign in with `codex login`, or use an OpenAI API key instead.",
@@ -90,61 +99,56 @@ export class CodexCli {
     }
   }
 
-  /** `codex login status` — exits 0 and names the method when signed in.
-   *  Synchronous: for Settings and diagnostics only. Hot paths (every image
-   *  request) use statusAsync, which never blocks the backend thread. */
-  status(): CodexAuthStatus {
-    let bin: string;
-    try {
-      bin = this.resolveBinary();
-    } catch (e) {
-      return { loggedIn: false, error: String((e as Error).message) };
-    }
-    // The CLI prints its verdict on stderr, so read both streams.
-    const res = spawnSync(bin, ["login", "status"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 15_000,
-    });
-    const status = parseLoginStatus(
-      res.status,
-      `${res.stdout ?? ""}${res.stderr ?? ""}`,
-      res.error?.message,
-    );
-    this.remember(status);
-    return status;
-  }
-
-  private signedInAt = 0;
-  private signedInStatus: CodexAuthStatus | null = null;
+  private statusAt = 0;
+  private cachedStatus: CodexAuthStatus | null = null;
   private pendingStatus: Promise<CodexAuthStatus> | null = null;
 
-  /** Only a positive answer is cached: signing in again must take effect
-   *  on the next request, while an expired login surfaces as a failed turn
-   *  anyway (classifyCodexFailure → ImageAuthFailed). */
+  /** Every verdict is reused for STATUS_TTL_MS — signed out too, so a
+   *  signed-out user's image requests and health checks don't spawn the CLI
+   *  each time. Settings' re-check, an explicit test and a finished in-app
+   *  sign-in ask afresh ({ fresh: true }); an expired login surfaces as a
+   *  failed turn anyway (classifyCodexFailure → ImageAuthFailed). */
   private remember(status: CodexAuthStatus): void {
-    if (status.loggedIn) {
-      this.signedInStatus = status;
-      this.signedInAt = Date.now();
-    } else {
-      this.signedInStatus = null;
+    // An error is no verdict (CLI missing, timeout): ask again next time.
+    if (status.error) {
+      this.cachedStatus = null;
+      return;
     }
+    this.cachedStatus = status;
+    this.statusAt = Date.now();
+  }
+
+  /** Drop the cached answer: the next statusAsync asks the CLI. */
+  forgetStatus(): void {
+    this.cachedStatus = null;
   }
 
   /** `codex login status` without blocking the event loop: spawned async,
-   *  a signed-in answer reused for STATUS_TTL_MS, and concurrent callers
-   *  (several threads asking for images at once) share one spawn. */
-  statusAsync(): Promise<CodexAuthStatus> {
+   *  the answer cached (see remember), and concurrent callers (several
+   *  threads asking for images at once) share one spawn. */
+  statusAsync({ fresh = false } = {}): Promise<CodexAuthStatus> {
+    if (fresh) this.forgetStatus();
     if (
-      this.signedInStatus &&
-      Date.now() - this.signedInAt < CodexCli.STATUS_TTL_MS
+      this.cachedStatus &&
+      Date.now() - this.statusAt < CodexCli.STATUS_TTL_MS
     ) {
-      return Promise.resolve(this.signedInStatus);
+      return Promise.resolve(this.cachedStatus);
     }
-    this.pendingStatus ??= this.spawnStatus().finally(() => {
-      this.pendingStatus = null;
-    });
-    return this.pendingStatus;
+    // A fresh check never joins a spawn that started before it.
+    if (this.pendingStatus && !fresh) return this.pendingStatus;
+    const pending: Promise<CodexAuthStatus> = this.spawnStatus().then(
+      (status) => {
+        // Only the latest spawn records its answer: one that started before
+        // a fresh check must not overwrite it.
+        if (this.pendingStatus === pending) {
+          this.pendingStatus = null;
+          this.remember(status);
+        }
+        return status;
+      },
+    );
+    this.pendingStatus = pending;
+    return pending;
   }
 
   static readonly STATUS_TTL_MS = 5 * 60_000;
@@ -152,7 +156,7 @@ export class CodexCli {
   private async spawnStatus(): Promise<CodexAuthStatus> {
     let bin: string;
     try {
-      bin = this.resolveBinary();
+      bin = await this.resolveBinaryAsync();
     } catch (e) {
       return { loggedIn: false, error: String((e as Error).message) };
     }
@@ -172,7 +176,6 @@ export class CodexCli {
         proc.signalCode ? null : code,
         `${out}${err}`,
       );
-      this.remember(status);
       return status;
     } catch (e) {
       return { loggedIn: false, error: String((e as Error)?.message ?? e) };
@@ -220,7 +223,7 @@ export class OpenAISubscriptionAuth implements CodexAuthStrategy {
   constructor(private cli: CodexCli) {}
 
   validate(): void {
-    this.cli.resolveBinary();
+    this.cli.validateBinary();
   }
 
   codexOptions() {
@@ -260,7 +263,7 @@ export class OpenAIApiKeyAuth implements CodexAuthStrategy {
     if (!this.getKey()) {
       throw new Error("No OpenAI API key configured. Add one in Settings.");
     }
-    if (!hasBundledCodex()) this.cli.resolveBinary();
+    if (!hasBundledCodex()) this.cli.validateBinary();
   }
 
   codexOptions() {

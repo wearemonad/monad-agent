@@ -13,6 +13,9 @@ export interface LoopSpec {
   /** Milliseconds a single run may take before it's aborted and logged;
    *  the loop then carries on with its next run. Omit for no limit. */
   readonly timeout?: number;
+  /** Awaited before each run, outside the timeout — e.g. ForegroundGate's
+   *  whenIdle, so background work waits for the user to pause. */
+  readonly waitFor?: () => Promise<void>;
   /** The signal aborts on timeout or when the runtime is disposed mid-run. */
   readonly run: (signal: AbortSignal) => void | Promise<void>;
 }
@@ -47,10 +50,14 @@ const ownedLoop = (spec: LoopSpec) => {
       ),
     ),
   );
+  const waitFor = spec.waitFor;
+  const gated = waitFor
+    ? Effect.promise(() => waitFor()).pipe(Effect.andThen(once))
+    : once;
   const body =
     spec.every === undefined
-      ? once
-      : once.pipe(Effect.repeat(Schedule.spaced(spec.every)));
+      ? gated
+      : gated.pipe(Effect.repeat(Schedule.spaced(spec.every)));
   return Effect.sleep(spec.firstDelay).pipe(
     Effect.andThen(body),
     Effect.forkScoped,

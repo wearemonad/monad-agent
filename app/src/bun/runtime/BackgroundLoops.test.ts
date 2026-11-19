@@ -230,6 +230,41 @@ describe("backgroundLoops", () => {
     );
   });
 
+  test("each run first waits for its gate, and the wait doesn't count against the timeout", async () => {
+    let open: () => void = () => {};
+    let gates = 0;
+    let runs = 0;
+    await withLoops(
+      [
+        {
+          name: "drive-sync",
+          firstDelay: 10_000,
+          every: 300_000,
+          timeout: 60_000,
+          waitFor: () => {
+            gates++;
+            return new Promise<void>((resolve) => {
+              open = resolve;
+            });
+          },
+          run: () => void runs++,
+        },
+      ],
+      async (advance) => {
+        await advance(10_000);
+        expect(gates).toBe(1);
+        await advance(120_000); // held past the run timeout
+        expect(runs).toBe(0);
+        open();
+        await advance(0);
+        expect(runs).toBe(1);
+        expect(logs).toEqual([]);
+        await advance(300_000);
+        expect(gates).toBe(2);
+      },
+    );
+  });
+
   test("one loop failing every run leaves the others on schedule", async () => {
     let healthy = 0;
     await withLoops(

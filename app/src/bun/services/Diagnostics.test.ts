@@ -37,7 +37,7 @@ describe("recentActivity", () => {
 });
 
 describe("exportDiagnostics", () => {
-  test("zips the log, scheduler state, jobs, claims and recent activity", () => {
+  test("zips the log, scheduler state, jobs, claims and recent activity", async () => {
     const outDir = tmp("monad-out-");
     const logDir = tmp("monad-logs-");
     fs.writeFileSync(path.join(logDir, "monad.log"), "hello log\n");
@@ -56,7 +56,7 @@ describe("exportDiagnostics", () => {
     );
     fs.writeFileSync(path.join(ws, ".env"), "SECRET=1\n");
 
-    const zip = exportDiagnostics({
+    const zip = await exportDiagnostics({
       outDir,
       logDir,
       now,
@@ -117,7 +117,7 @@ describe("exportDiagnostics", () => {
     ]);
 
     // a second export the same minute doesn't overwrite the first
-    const again = exportDiagnostics({
+    const again = await exportDiagnostics({
       outDir,
       logDir,
       now,

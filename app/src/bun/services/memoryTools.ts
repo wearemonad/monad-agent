@@ -7,7 +7,8 @@ import {
   type WorkingMemorySection,
 } from "../../shared/memory";
 import type { EntityProfile, EntitySummary } from "./knowledgeGraph";
-import type { MemoryIndexService } from "./MemoryIndexService";
+import type { Chunk, MemoryIndexService } from "./MemoryIndexService";
+import type { KnowledgeGraph } from "./knowledgeGraph";
 import {
   applyWorkingMemoryOp,
   loadWorkingMemory,
@@ -27,10 +28,18 @@ const err = (message: string) => ({
 const BOOKEND = 3;
 const MATCH_WINDOW = 2;
 
+/** What the tools read: the worker façade (MemoryIndex) in the app, the
+ *  in-process MemoryIndexService in tests. */
+export type MemoryIndexReader = {
+  search: MemoryIndexService["search"];
+  sessionChunks(wsPath: string, sessionId: string): Chunk[] | Promise<Chunk[]>;
+  graph(wsPath: string): KnowledgeGraph | Promise<KnowledgeGraph>;
+};
+
 export type MemoryToolDeps = {
-  index: MemoryIndexService;
+  index: MemoryIndexReader;
   /** Freshen the index before reading (incremental — cheap when unchanged). */
-  sync: () => Promise<void>;
+  sync: () => Promise<unknown>;
 };
 
 /** One search hit rendered with its citation line — source · date · heading —
@@ -188,7 +197,7 @@ export function buildMemoryTools(workspacePath: string, deps: MemoryToolDeps) {
       async ({ session_id, query }) => {
         try {
           await deps.sync();
-          const chunks = deps.index.sessionChunks(
+          const chunks = await deps.index.sessionChunks(
             workspacePath,
             session_id.trim(),
           );
@@ -307,7 +316,7 @@ export function buildMemoryTools(workspacePath: string, deps: MemoryToolDeps) {
         if (q.length < 2) return err("name is too short.");
         try {
           await deps.sync();
-          const graph = deps.index.graph(workspacePath);
+          const graph = await deps.index.graph(workspacePath);
           const profile = graph.entity(q);
           if (profile) return text(formatEntity(profile));
           const near = graph.suggest(q);
@@ -354,7 +363,7 @@ export function buildMemoryTools(workspacePath: string, deps: MemoryToolDeps) {
           await deps.sync();
           return text(
             formatEntityList(
-              deps.index.graph(workspacePath).entities({
+              (await deps.index.graph(workspacePath)).entities({
                 type,
                 notMentionedSinceDays: not_mentioned_since_days,
                 sort,

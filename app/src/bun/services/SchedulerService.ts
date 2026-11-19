@@ -274,7 +274,14 @@ export class SchedulerService {
       workspacePath: string,
       entry: { kind: string; detail: string },
     ) => void = () => {},
+    /** ForegroundGate.isIdle: catch-up jobs (whose time passed a while ago —
+     *  typically at launch) wait for a quiet moment instead of competing
+     *  with the user's Threads. Jobs due right now are never held. */
+    private foregroundIdle: () => boolean = () => true,
   ) {}
+
+  /** `workspaceId:jobId` → when a catch-up was first held for a busy app. */
+  private catchUpHeldSince = new Map<string, number>();
 
   /** `workspaceId:jobId:date:reason` already written to the activity log —
    *  a job stays due for many ticks, its reason is logged once a day. */
@@ -619,6 +626,7 @@ export class SchedulerService {
           if (!isJobDue(job, now)) continue;
           // Held back by transient-failure backoff — still due, not yet.
           if (this.retryAfterFor(ws.id, job.id) > now.getTime()) continue;
+          if (this.holdCatchUp(ws, job, now)) continue;
           due.push({ ws, job });
         }
       }
@@ -682,6 +690,33 @@ export class SchedulerService {
     } finally {
       this.ticking = false;
     }
+  }
+
+  /** True while a catch-up job should keep waiting for the app to go idle
+   *  — at most CATCH_UP_MAX_HOLD_MS, so it never starves. */
+  private holdCatchUp(
+    ws: { id: string; path: string },
+    job: ScheduledJob,
+    now: Date,
+  ): boolean {
+    const key = `${ws.id}:${job.id}`;
+    if (!isCatchUp(job, now) || this.foregroundIdle()) {
+      this.catchUpHeldSince.delete(key);
+      return false;
+    }
+    const since = this.catchUpHeldSince.get(key) ?? now.getTime();
+    this.catchUpHeldSince.set(key, since);
+    if (now.getTime() - since >= CATCH_UP_MAX_HOLD_MS) {
+      this.catchUpHeldSince.delete(key);
+      return false;
+    }
+    this.note(
+      ws.path,
+      key,
+      "held",
+      `${job.name} is due (catch-up) — waiting for the app to be idle`,
+    );
+    return true;
   }
 
   /** The "alive" status line, every HEARTBEAT_MS from its own loop (see
@@ -788,6 +823,19 @@ export function localDateKey(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+/** A due job counts as catch-up once its time is this far behind. */
+export const CATCH_UP_AFTER_MS = 2 * 60_000;
+/** Longest a catch-up job waits for the app to go idle (ForegroundGate). */
+export const CATCH_UP_MAX_HOLD_MS = 10 * 60_000;
+
+/** Due, and late: its time passed more than CATCH_UP_AFTER_MS ago (the app
+ *  was closed or asleep then). A job whose minute just arrived is not. */
+export function isCatchUp(job: ScheduledJob, now: Date): boolean {
+  const scheduled = new Date(now);
+  scheduled.setHours(job.hour, job.minute, 0, 0);
+  return now.getTime() - scheduled.getTime() > CATCH_UP_AFTER_MS;
 }
 
 /** Pure due check: enabled, right weekday, not yet run today, time reached. */

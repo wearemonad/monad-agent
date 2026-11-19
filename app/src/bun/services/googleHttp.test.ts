@@ -81,10 +81,10 @@ beforeEach(() => {
   stored = [];
   opened = [];
   Keychain.get = () => "refresh-token";
-  Keychain.set = (service: string, value: string) => {
+  Keychain.set = async (service: string, value: string) => {
     stored.push([service, value]);
   };
-  Keychain.delete = (service: string) => {
+  Keychain.delete = async (service: string) => {
     deleted.push(service);
   };
   const base = `http://127.0.0.1:${server.port}`;

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { fixProcessPath, mergePaths } from "./shellPath";
+import { findOnPath, fixProcessPath, mergePaths } from "./shellPath";
 
 test("mergePaths keeps shell order first and dedupes", () => {
   expect(
@@ -21,15 +21,22 @@ test("mergePaths drops empty segments", () => {
 // Simulates the Dock launch: strip PATH to launchd's default, run the fix,
 // and the tools the terminal sees (bun is a safe proxy — it's how these tests
 // run) must be findable again.
-test("fixProcessPath restores tools hidden from a minimal GUI PATH", () => {
+test("fixProcessPath restores tools hidden from a minimal GUI PATH", async () => {
   const original = process.env.PATH;
   try {
     process.env.PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
-    fixProcessPath();
+    await fixProcessPath();
     expect(Bun.which("bun")).toBeTruthy();
     // The minimal entries must survive the merge too.
     expect(process.env.PATH).toContain("/usr/bin");
   } finally {
     process.env.PATH = original;
   }
+});
+
+test("findOnPath finds an executable without a shell, in PATH order", () => {
+  expect(findOnPath("ls", "/nonexistent:/bin:/usr/bin")).toBe("/bin/ls");
+  expect(findOnPath("definitely-not-a-tool", "/bin:/usr/bin")).toBeNull();
+  // a directory of that name is not an executable
+  expect(findOnPath("bin", "/usr")).toBeNull();
 });
