@@ -82,6 +82,8 @@ function eventsFor(i: number): AgentStreamEvent[] {
 /** Fresh store with 10 Threads, each with a run registered; thread 0 is the
  *  one on screen. Returns the events round-robin across all threads. */
 function setup(): AgentStreamEvent[] {
+  // Other test files share this store module: start from no stashed threads.
+  useStore.setState({ threads: {} });
   const s = useStore.getState();
   for (let i = THREADS - 1; i >= 0; i--) {
     s.newChat();
@@ -141,5 +143,101 @@ describe("store cost per update", () => {
       checked++;
     }
     expect(checked).toBeGreaterThan(EVENTS * 0.8);
+  });
+});
+
+describe("one store update per frame (PR 3g)", () => {
+  /** The store's observable result, minus the per-setup random thread keys. */
+  /** Stashed threads from earlier setups, left out of the comparison. */
+  let earlier = new Set<string>();
+  const freshSetup = () => {
+    const { threads, activeThreadKey } = useStore.getState();
+    // the thread on screen now gets stashed by setup — it's earlier too
+    earlier = new Set([...Object.keys(threads), activeThreadKey]);
+    return setup();
+  };
+  const outcome = () => {
+    const s = useStore.getState();
+    return {
+      visible: sliceKeys.map((k) => s[k]),
+      background: Object.entries(s.threads)
+        .filter(([k]) => !earlier.has(k))
+        .map(([, t]) => t.items.length),
+      runningSessions: s.runningSessions,
+      unread: s.unreadSessions,
+    };
+  };
+
+  test("applyEvents(batch) ends where applying each event in turn ends", () => {
+    const events = freshSetup().slice(0, 2_000);
+    for (const e of events) useStore.getState().applyEvent(e);
+    const oneByOne = outcome();
+    freshSetup();
+    useStore.getState().applyEvents(events);
+    expect(outcome()).toEqual(oneByOne);
+  });
+
+  test("a whole batch notifies subscribers once", () => {
+    const events = setup().slice(0, 500);
+    let updates = 0;
+    const unsub = useStore.subscribe(() => updates++);
+    useStore.getState().applyEvents(events);
+    unsub();
+    expect(updates).toBe(1);
+  });
+});
+
+describe("no history re-fetch for Threads in memory (PR 3d)", () => {
+  test("switchToThread restores a background Thread's live snapshot", () => {
+    const events = setup();
+    useStore.getState().applyEvents(events);
+    const target = Object.values(useStore.getState().threads).find(
+      (t) => t.resumeSessionId === "session-3",
+    );
+    expect(target).toBeDefined();
+    expect(useStore.getState().switchToThread("session-3")).toBe(true);
+    const s = useStore.getState();
+    expect(s.resumeSessionId).toBe("session-3");
+    expect(s.items).toBe(target!.items);
+  });
+
+  test("a Thread not in memory reports false (the caller fetches history)", () => {
+    expect(useStore.getState().switchToThread("never-opened")).toBe(false);
+  });
+});
+
+describe("stable transcript blocks (PR 3e)", () => {
+  let toBlocks: typeof import("./transcriptBlocks").toBlocks;
+  beforeAll(async () => {
+    ({ toBlocks } = await import("./transcriptBlocks"));
+  });
+
+  test("appending an item keeps every earlier block reference-equal", () => {
+    const events = setup();
+    let prevItems = useStore.getState().items;
+    let prev = toBlocks(prevItems);
+    let appends = 0;
+    for (const e of events) {
+      useStore.getState().applyEvent(e);
+      const items = useStore.getState().items;
+      if (items === prevItems) continue;
+      const blocks = toBlocks(items, prev);
+      // An append can grow the last block or add one; a tool result
+      // replaces one item in place. Everything before is untouched.
+      const changedAt = items.findIndex((it, i) => it !== prevItems[i]);
+      for (let b = 0; b < prev.length - 1; b++) {
+        const block = prev[b];
+        const lastIdx =
+          block.kind === "activity"
+            ? items.indexOf(block.entries[block.entries.length - 1])
+            : items.indexOf(block.item);
+        if (lastIdx !== -1 && lastIdx < changedAt)
+          expect(blocks[b]).toBe(block);
+      }
+      if (changedAt === prevItems.length) appends++;
+      prevItems = items;
+      prev = blocks;
+    }
+    expect(appends).toBeGreaterThan(10);
   });
 });

@@ -1,5 +1,10 @@
 import { create } from "zustand";
 import { deriveArtifacts, type ArtifactState } from "../shared/artifacts";
+import {
+  keepIfEqual,
+  keepListIfEqual,
+  keepRecordIfEqual,
+} from "./lib/keepIfEqual";
 import type { SectionId } from "./threadGroups";
 import type {
   AgentStreamEvent,
@@ -16,8 +21,10 @@ import type {
   ProviderId,
   ReviewItem,
   RunOptions,
+  SessionChanges,
   SessionSummary,
   SettingsView,
+  SidebarSnapshot,
   SkillInfo,
   WorkspaceInfo,
 } from "../shared/ipc";
@@ -201,6 +208,9 @@ type MonadState = ThreadSnapshot & {
 
   push: (item: ChatItem) => void;
   applyEvent: (e: AgentStreamEvent) => void;
+  /** Apply a batch of stream events (one animation frame's worth) in a
+   *  single store update. */
+  applyEvents: (batch: AgentStreamEvent[]) => void;
   /** Bind a freshly minted runId to the active thread, BEFORE the startRun
    *  RPC goes out — stream events may beat the response back. */
   registerRun: (runId: string) => void;
@@ -214,6 +224,10 @@ type MonadState = ThreadSnapshot & {
   enqueuePermission: (req: PermissionRequest) => void;
   removePermission: (requestId: string) => void;
   newChat: () => void;
+  /** Open a Thread that's already in memory (streaming in the background or
+   *  recently left) straight from its snapshot — no history fetch. False when
+   *  it isn't in memory. */
+  switchToThread: (sessionId: string) => boolean;
   openHistory: (
     sessionId: string,
     items: ChatItem[],
@@ -221,6 +235,11 @@ type MonadState = ThreadSnapshot & {
   ) => void;
   setSessions: (s: SessionSummary[]) => void;
   setAllSessions: (s: Record<string, SessionSummary[]>) => void;
+  /** Targeted sidebar update pushed by bun: only the Thread rows that
+   *  changed (upserted or removed), per workspace. */
+  applySessionChanges: (changes: SessionChanges[]) => void;
+  /** Every sidebar list at once (mount and workspace switch only). */
+  applySidebarSnapshot: (snap: SidebarSnapshot) => void;
   setSearchQuery: (q: string) => void;
   setHighlightTerm: (term: string | null) => void;
   setModel: (m: string, provider?: ProviderId | null) => void;
@@ -272,6 +291,32 @@ type MonadState = ThreadSnapshot & {
     error?: string;
   }) => void;
 };
+
+const bySession = (r: SessionSummary) => r.sessionId;
+
+/** Thread lists by workspace id, unchanged rows and lists kept. */
+function keepSessionsByWorkspace(
+  prev: Record<string, SessionSummary[]>,
+  next: Record<string, SessionSummary[]>,
+): Record<string, SessionSummary[]> {
+  return keepRecordIfEqual(prev, next, (p, n) =>
+    keepListIfEqual(p, n, bySession),
+  );
+}
+
+/** Upsert/remove Thread rows, newest first (the sidebar's order). */
+export function applyRowChanges(
+  rows: SessionSummary[],
+  change: SessionChanges,
+): SessionSummary[] {
+  const drop = new Set([
+    ...change.remove,
+    ...change.upsert.map((r) => r.sessionId),
+  ]);
+  return [...change.upsert, ...rows.filter((r) => !drop.has(r.sessionId))].sort(
+    (a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""),
+  );
+}
 
 /** Set by rpc.ts at init (kept out of state to avoid a circular import):
  *  opening a thread — fresh or resumed — boots its agent session early so the
@@ -443,6 +488,69 @@ function reduceThread(
   }
 }
 
+/** One stream event's effect on the store: its thread's transitions (routed
+ *  by runId to the visible or a stashed thread) plus the cross-thread
+ *  bookkeeping. Null when the event has nowhere to land. */
+function stepEvent(
+  s: MonadState,
+  e: AgentStreamEvent,
+): Partial<MonadState> | null {
+  const runId = "runId" in e ? e.runId : "";
+  // Route by the run's own thread. Unknown runId = a run this UI never
+  // started or one already finished — its stragglers have nowhere to land.
+  const key = runId ? s.runThreads[runId] : undefined;
+  if (!key) return null;
+  const global: Partial<MonadState> = {};
+  if (e.kind === "run-started" && e.sessionId) {
+    global.runningSessions = {
+      ...s.runningSessions,
+      [e.sessionId]: e.runId,
+    };
+  }
+  if (e.kind === "run-finished" || e.kind === "run-error") {
+    // A run that ended can no longer be answered — drop its stale cards,
+    // its sidebar spinner, and (last event by contract) its routing entry.
+    global.permissionQueue = s.permissionQueue.filter((r) => r.runId !== runId);
+    const running = { ...s.runningSessions };
+    for (const [sid, rid] of Object.entries(running)) {
+      if (rid === runId) delete running[sid];
+    }
+    global.runningSessions = running;
+    const routes = { ...s.runThreads };
+    delete routes[runId];
+    global.runThreads = routes;
+    // A run that ended off-screen is news the user hasn't seen — dot the
+    // thread. On-screen finishes need no dot, and an abort is the user's
+    // own deliberate stop, not something to flag.
+    const endedSessionId =
+      e.kind === "run-finished"
+        ? e.sessionId
+        : Object.entries(s.runningSessions).find(
+            ([, rid]) => rid === runId,
+          )?.[0];
+    const aborted = e.kind === "run-error" && e.aborted;
+    if (
+      endedSessionId &&
+      !aborted &&
+      key !== s.activeThreadKey &&
+      !s.unreadSessions.includes(endedSessionId)
+    ) {
+      global.unreadSessions = [...s.unreadSessions, endedSessionId];
+      saveUnread(global.unreadSessions);
+    }
+  }
+  if (key === s.activeThreadKey) {
+    return { ...global, ...reduceThread(snapshotOf(s), e) };
+  }
+  const t = s.threads[key];
+  return t
+    ? {
+        ...global,
+        threads: { ...s.threads, [key]: { ...t, ...reduceThread(t, e) } },
+      }
+    : global;
+}
+
 export const useStore = create<MonadState>((set, get) => ({
   ...emptyThread(null),
   activeThreadKey: uid(),
@@ -497,67 +605,20 @@ export const useStore = create<MonadState>((set, get) => ({
       runThreads: { ...s.runThreads, [runId]: s.activeThreadKey },
     })),
 
-  applyEvent: (e) => {
-    const s = get();
-    const runId = "runId" in e ? e.runId : "";
-    // Route by the run's own thread. Unknown runId = a run this UI never
-    // started or one already finished — its stragglers have nowhere to land.
-    const key = runId ? s.runThreads[runId] : undefined;
-    if (!key) return;
-    const global: Partial<MonadState> = {};
-    if (e.kind === "run-started" && e.sessionId) {
-      global.runningSessions = {
-        ...s.runningSessions,
-        [e.sessionId]: e.runId,
-      };
+  applyEvent: (e) => get().applyEvents([e]),
+
+  applyEvents: (batch) => {
+    // One set() for the whole batch: each event's patch lands on a working
+    // copy the next event reads from, and subscribers hear about it once.
+    const work = { ...get() };
+    const patch: Partial<MonadState> = {};
+    for (const e of batch) {
+      const p = stepEvent(work, e);
+      if (!p) continue;
+      Object.assign(work, p);
+      Object.assign(patch, p);
     }
-    if (e.kind === "run-finished" || e.kind === "run-error") {
-      // A run that ended can no longer be answered — drop its stale cards,
-      // its sidebar spinner, and (last event by contract) its routing entry.
-      global.permissionQueue = s.permissionQueue.filter(
-        (r) => r.runId !== runId,
-      );
-      const running = { ...s.runningSessions };
-      for (const [sid, rid] of Object.entries(running)) {
-        if (rid === runId) delete running[sid];
-      }
-      global.runningSessions = running;
-      const routes = { ...s.runThreads };
-      delete routes[runId];
-      global.runThreads = routes;
-      // A run that ended off-screen is news the user hasn't seen — dot the
-      // thread. On-screen finishes need no dot, and an abort is the user's
-      // own deliberate stop, not something to flag.
-      const endedSessionId =
-        e.kind === "run-finished"
-          ? e.sessionId
-          : Object.entries(s.runningSessions).find(
-              ([, rid]) => rid === runId,
-            )?.[0];
-      const aborted = e.kind === "run-error" && e.aborted;
-      if (
-        endedSessionId &&
-        !aborted &&
-        key !== s.activeThreadKey &&
-        !s.unreadSessions.includes(endedSessionId)
-      ) {
-        global.unreadSessions = [...s.unreadSessions, endedSessionId];
-        saveUnread(global.unreadSessions);
-      }
-    }
-    if (key === s.activeThreadKey) {
-      set({ ...global, ...reduceThread(snapshotOf(s), e) });
-    } else {
-      const t = s.threads[key];
-      set(
-        t
-          ? {
-              ...global,
-              threads: { ...s.threads, [key]: { ...t, ...reduceThread(t, e) } },
-            }
-          : global,
-      );
-    }
+    if (Object.keys(patch).length) set(patch);
   },
 
   applyDriveEvent: (e) =>
@@ -592,24 +653,33 @@ export const useStore = create<MonadState>((set, get) => ({
       return { unreadSessions };
     }),
 
-  openHistory: (sessionId, items, contextTokens) => {
+  switchToThread: (sessionId) => {
+    const s = get();
+    const found = Object.entries(s.threads).find(
+      ([, t]) => t.resumeSessionId === sessionId,
+    );
+    if (!found) return false;
     get().markRead(sessionId);
-    let restoredRunning = false;
+    const [key, snap] = found;
     set((s) => {
-      // A stashed thread for this session — running or recently finished —
-      // wins over the fetched history: it has the live streaming state.
-      const found = Object.entries(s.threads).find(
-        ([, t]) => t.resumeSessionId === sessionId,
-      );
-      const threads = stashThreads(s, found?.[0]);
-      if (found) {
-        const [key, snap] = found;
-        delete threads[key];
-        restoredRunning = snap.runState === "running";
-        return { threads, activeThreadKey: key, ...snap };
-      }
+      const threads = stashThreads(s, key);
+      delete threads[key];
+      return { threads, activeThreadKey: key, ...snap };
+    });
+    // A running thread already has its live session — prewarming would boot
+    // a pointless second process next to it.
+    if (snap.runState !== "running") prewarmHandler(sessionId);
+    return true;
+  },
+
+  openHistory: (sessionId, items, contextTokens) => {
+    // The thread came into memory while its history loaded (a run started
+    // there): the live snapshot wins over what was read from disk.
+    if (get().switchToThread(sessionId)) return;
+    get().markRead(sessionId);
+    set((s) => {
       return {
-        threads,
+        threads: stashThreads(s),
         activeThreadKey: uid(),
         items,
         streamingText: "",
@@ -635,9 +705,7 @@ export const useStore = create<MonadState>((set, get) => ({
         artifactPanelOpen: false,
       };
     });
-    // A restored running thread already has its live session — prewarming
-    // would boot a pointless second process next to it.
-    if (!restoredRunning) prewarmHandler(sessionId);
+    prewarmHandler(sessionId);
   },
 
   dropThreadForSession: (sessionId) => {
@@ -675,8 +743,52 @@ export const useStore = create<MonadState>((set, get) => ({
   bumpGmailDrafts: () =>
     set((s) => ({ gmailDraftsBump: s.gmailDraftsBump + 1 })),
 
-  setSessions: (sessions) => set({ sessions }),
-  setAllSessions: (allSessions) => set({ allSessions }),
+  setSessions: (sessions) =>
+    set((s) => ({
+      sessions: keepListIfEqual(s.sessions, sessions, bySession),
+    })),
+  setAllSessions: (allSessions) =>
+    set((s) => ({
+      allSessions: keepSessionsByWorkspace(s.allSessions, allSessions),
+    })),
+  applySessionChanges: (changes) =>
+    set((s) => {
+      const allSessions = { ...s.allSessions };
+      for (const c of changes) {
+        allSessions[c.workspaceId] = applyRowChanges(
+          allSessions[c.workspaceId] ?? [],
+          c,
+        );
+      }
+      const activeId = s.workspaces.find((w) => w.active)?.id;
+      return {
+        allSessions: keepSessionsByWorkspace(s.allSessions, allSessions),
+        ...(activeId && changes.some((c) => c.workspaceId === activeId)
+          ? {
+              sessions: keepListIfEqual(
+                s.sessions,
+                allSessions[activeId] ?? [],
+                bySession,
+              ),
+            }
+          : {}),
+      };
+    }),
+  applySidebarSnapshot: (snap) => {
+    const st = get();
+    st.setWorkspaces(snap.workspaces);
+    st.setAllSessions(snap.byWorkspace);
+    const active = snap.workspaces.find((w) => w.active);
+    st.setSessions(active ? (snap.byWorkspace[active.id] ?? []) : []);
+    st.setInbox(snap.inbox);
+    st.setIngest(snap.ingest);
+    st.setBackgroundRun(snap.background);
+    st.setOutbox(snap.outbox);
+    st.setSkills(snap.skills);
+    st.setKnowledgePaths(snap.knowledgePaths);
+    st.setReview(snap.review);
+    st.setHealth(snap.health);
+  },
   setSearchQuery: (searchQuery) => set({ searchQuery }),
   setHighlightTerm: (highlightTerm) => set({ highlightTerm }),
   setRunOptions: (key, patch) =>
@@ -695,7 +807,8 @@ export const useStore = create<MonadState>((set, get) => ({
     set({ model, modelProvider: provider });
   },
   setComposerDraft: (composerDraft) => set({ composerDraft }),
-  setSkills: (skills) => set({ skills }),
+  setSkills: (skills) =>
+    set((s) => ({ skills: keepListIfEqual(s.skills, skills, (k) => k.name) })),
   togglePin: (sessionId) =>
     set((s) => {
       const pinnedSessions = s.pinnedSessions.includes(sessionId)
@@ -715,7 +828,10 @@ export const useStore = create<MonadState>((set, get) => ({
       );
       return { collapsedSections };
     }),
-  setWorkspaces: (workspaces) => set({ workspaces }),
+  setWorkspaces: (workspaces) =>
+    set((s) => ({
+      workspaces: keepListIfEqual(s.workspaces, workspaces, (w) => w.id),
+    })),
   setRun: (runState, activeRunId = null) => set({ runState, activeRunId }),
   // Leaving settings or the section drops the New workspace dialog, so it
   // doesn't pop back open on the next visit.
@@ -726,16 +842,23 @@ export const useStore = create<MonadState>((set, get) => ({
   openSettingsAt: (settingsSection) =>
     set({ settingsOpen: true, settingsSection, newWorkspaceOpen: false }),
   setNewWorkspaceOpen: (newWorkspaceOpen) => set({ newWorkspaceOpen }),
-  setSettings: (settings) => set({ settings }),
+  setSettings: (settings) =>
+    set((s) => ({ settings: keepIfEqual(s.settings, settings) })),
   setUpdateStatus: (updateStatus) => set({ updateStatus }),
-  setInbox: (inboxFiles) => set({ inboxFiles }),
-  setIngest: (ingest) => set({ ingest }),
+  setInbox: (inboxFiles) =>
+    set((s) => ({
+      inboxFiles: keepListIfEqual(s.inboxFiles, inboxFiles, (f) => f.name),
+    })),
+  setIngest: (ingest) =>
+    set((s) => ({ ingest: keepIfEqual(s.ingest, ingest) })),
   // Background runs (briefing/scheduled/prep) never route through applyEvent
   // (the UI didn't start them), so their "finished" moment is the run leaving
   // this slot — dot the thread it produced unless the user is looking at it.
-  setBackgroundRun: (run) =>
+  setBackgroundRun: (next) =>
     set((s) => {
       const prev = s.backgroundRun;
+      const run = keepIfEqual(prev, next);
+      if (run === prev) return {};
       const endedSessionId =
         prev?.runId !== run?.runId ? prev?.sessionId : undefined;
       if (
@@ -749,9 +872,16 @@ export const useStore = create<MonadState>((set, get) => ({
       saveUnread(unreadSessions);
       return { backgroundRun: run, unreadSessions };
     }),
-  setOutbox: (outboxFiles) => set({ outboxFiles }),
-  setReview: (reviewItems) => set({ reviewItems }),
-  setHealth: (healthIssues) => set({ healthIssues }),
+  setOutbox: (outboxFiles) =>
+    set((s) => ({
+      outboxFiles: keepListIfEqual(s.outboxFiles, outboxFiles, (f) => f.name),
+    })),
+  setReview: (reviewItems) =>
+    set((s) => ({
+      reviewItems: keepListIfEqual(s.reviewItems, reviewItems, (r) => r.path),
+    })),
+  setHealth: (healthIssues) =>
+    set((s) => ({ healthIssues: keepIfEqual(s.healthIssues, healthIssues) })),
   setClaudeAuth: (claudeAuth) => set({ claudeAuth }),
   setClaudeLoginResult: (r) =>
     set((s) => ({
@@ -766,7 +896,10 @@ export const useStore = create<MonadState>((set, get) => ({
   setAboutOpen: (aboutOpen) => set({ aboutOpen }),
   openKnowledgeAt: (knowledgeInitialPath) =>
     set({ knowledgeOpen: true, knowledgeInitialPath }),
-  setKnowledgePaths: (knowledgePaths) => set({ knowledgePaths }),
+  setKnowledgePaths: (knowledgePaths) =>
+    set((s) => ({
+      knowledgePaths: keepIfEqual(s.knowledgePaths, knowledgePaths),
+    })),
 
   setOllama: (ollama) => set({ ollama }),
   applyPullProgress: (p) =>

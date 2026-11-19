@@ -369,6 +369,9 @@ export class SessionStore {
       const kindById = new Map<string, { type: ArtifactType; title: string }>();
       // Successful generate_image calls: their images arrive in the result.
       const imageToolUses = new Set<string>();
+      /** toolUseId → its tool row, so each result finds its call in O(1)
+       *  (replay stays linear in the transcript, not quadratic). */
+      const toolById = new Map<string, ChatItem>();
       for (const msg of messages as any[]) {
         const m = msg.message ?? msg;
         const role = m?.role ?? msg.type;
@@ -430,13 +433,15 @@ export class SessionStore {
                 continue;
               }
             }
-            items.push({
+            const tool: ChatItem = {
               type: "tool",
               toolUseId: block.id,
               name: block.name,
               inputSummary: summarize(block.name, block.input),
               pending: false,
-            });
+            };
+            items.push(tool);
+            if (!toolById.has(block.id)) toolById.set(block.id, tool);
           } else if (block.type === "tool_result") {
             if (imageToolUses.has(block.tool_use_id)) {
               for (const img of parseImageToolResult(block.content)) {
@@ -444,9 +449,7 @@ export class SessionStore {
               }
               continue;
             }
-            const prior = items.find(
-              (i) => i.type === "tool" && i.toolUseId === block.tool_use_id,
-            );
+            const prior = toolById.get(block.tool_use_id);
             if (prior && prior.type === "tool") {
               prior.output =
                 typeof block.content === "string"

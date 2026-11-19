@@ -126,6 +126,28 @@ export type SessionSummary = {
   model?: string;
 };
 
+/** Thread rows that changed in one workspace's sidebar list: `upsert` rows
+ *  replace (or add) the row with the same sessionId; `remove` ids drop out. */
+export type SessionChanges = {
+  workspaceId: string;
+  upsert: SessionSummary[];
+  remove: string[];
+};
+
+/** Every list the sidebar shows, in one response (mount + workspace switch). */
+export type SidebarSnapshot = {
+  byWorkspace: Record<string, SessionSummary[]>;
+  workspaces: WorkspaceInfo[];
+  inbox: InboxFile[];
+  outbox: OutboxFile[];
+  skills: SkillInfo[];
+  knowledgePaths: string[];
+  review: ReviewItem[];
+  health: HealthIssue[];
+  ingest: IngestStatus;
+  background: BackgroundRunInfo | null;
+};
+
 /** A workspace skill, parsed from .claude/skills/<name>/SKILL.md frontmatter. */
 export type SkillInfo = {
   name: string;
@@ -606,10 +628,9 @@ export type MonadRPC = {
         response: { ok: boolean };
       };
       listSessions: { params: {}; response: { sessions: SessionSummary[] } };
-      listAllSessions: {
-        params: {};
-        response: { byWorkspace: Record<string, SessionSummary[]> };
-      };
+      /** All sidebar lists in one response — used only on mount and on a
+       *  workspace switch; everything else arrives as targeted pushes. */
+      getSidebarSnapshot: { params: {}; response: SidebarSnapshot };
       getSessionHistory: {
         params: { sessionId: string };
         response: {
@@ -1168,8 +1189,13 @@ export type MonadRPC = {
       /** An in-app sign-in finished on its own — the CLI's browser tab
        *  completed through its local callback, no code needed. */
       claudeLoginFinished: { ok: boolean; email?: string; error?: string };
-      /** A background (scheduled) run finished — refresh the sessions list. */
-      sessionsChanged: {};
+      /** Thread rows changed (a Turn ended, a Thread appeared, was renamed
+       *  or deleted): only the changed rows, per workspace. */
+      sessionsChanged: { changes: SessionChanges[] };
+      /** The active workspace's knowledge doc paths changed. */
+      knowledgeChanged: { paths: string[] };
+      /** The active workspace's skills changed. */
+      skillsChanged: { skills: SkillInfo[] };
       /** Streaming progress for an ollamaPull download. */
       ollamaPullProgress: {
         model: string;
