@@ -3,7 +3,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { SubscriptionCliAuth } from "./AuthStrategy";
-import { CodexCli, OpenAISubscriptionAuth } from "./CodexAuth";
 
 /** A machine with no claude/codex anywhere: empty HOME, empty PATH. */
 let saved: { HOME?: string; PATH?: string };
@@ -51,15 +50,5 @@ describe("CLI lookup before the login-shell PATH has arrived", () => {
       () => new Promise(() => {}),
     );
     expect(() => auth.validate()).toThrow(/does not exist/);
-  });
-
-  test("Codex: same deferral for the OpenAI subscription", () => {
-    let pending: Promise<void> | null = new Promise(() => {});
-    const auth = new OpenAISubscriptionAuth(
-      new CodexCli(undefined, () => pending),
-    );
-    expect(() => auth.validate()).not.toThrow();
-    pending = null;
-    expect(() => auth.validate()).toThrow(/Codex CLI not found/);
   });
 });

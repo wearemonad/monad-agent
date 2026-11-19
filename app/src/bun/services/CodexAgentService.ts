@@ -374,7 +374,7 @@ export class CodexAgentService {
     return runId;
   }
 
-  /** Whether this run is still in flight. */
+  /** Whether this Turn is still in flight. */
   isTurnActive(runId: string): boolean {
     return this.runs.has(runId);
   }

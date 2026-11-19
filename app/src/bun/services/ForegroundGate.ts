@@ -37,17 +37,17 @@ export class ForegroundGate {
   /** Whether the agent services still run this Turn. A Turn that ends
    *  without a finished/error event would otherwise keep the app "busy"
    *  for good; one the probe disowns counts as ended. */
-  private readonly isTurnLive: (runId: string) => boolean;
+  private readonly isTurnActive: (runId: string) => boolean;
 
   constructor(
     opts: {
       clock?: GateClock;
       launchedAt?: number;
-      isTurnLive?: (runId: string) => boolean;
+      isTurnActive?: (runId: string) => boolean;
     } = {},
   ) {
     this.clock = opts.clock ?? realClock;
-    this.isTurnLive = opts.isTurnLive ?? (() => true);
+    this.isTurnActive = opts.isTurnActive ?? (() => true);
     this.busyUntil = (opts.launchedAt ?? this.clock.now()) + LAUNCH_BUSY_MS;
   }
 
@@ -104,7 +104,7 @@ export class ForegroundGate {
   private dropDeadTurns(): void {
     let dropped = false;
     for (const runId of this.streaming) {
-      if (this.isTurnLive(runId)) continue;
+      if (this.isTurnActive(runId)) continue;
       this.streaming.delete(runId);
       dropped = true;
     }

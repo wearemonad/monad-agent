@@ -27,7 +27,7 @@ export type CodexImageOptions = {
   home: string;
   /** The installed CLI (CodexCli): where it is, and whether it's signed in. */
   cli: {
-    resolveBinary(): string;
+    resolveBinary(): string | Promise<string>;
     /** Async so the check never blocks the backend thread mid-stream. */
     status(): CodexAuthStatus | Promise<CodexAuthStatus>;
   };
@@ -107,8 +107,8 @@ export function codexImageProvider(opts: CodexImageOptions): ImageProvider {
     id: "codex",
     generate: (req) =>
       Effect.gen(function* () {
-        yield* Effect.try({
-          try: () => opts.cli.resolveBinary(),
+        yield* Effect.tryPromise({
+          try: async () => opts.cli.resolveBinary(),
           catch: (e) =>
             new ImageProviderUnavailable({
               provider: "codex",

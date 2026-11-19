@@ -134,7 +134,7 @@ describe("ForegroundGate", () => {
     const gate = new ForegroundGate({
       clock,
       launchedAt: -10 * 60 * SEC,
-      isTurnLive: (runId) => live.has(runId),
+      isTurnActive: (runId) => live.has(runId),
     });
     gate.turnStarted("run-a");
     let released = false;

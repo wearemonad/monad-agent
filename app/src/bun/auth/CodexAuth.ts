@@ -3,7 +3,12 @@ import * as os from "node:os";
 import * as fs from "node:fs";
 import { Codex } from "@openai/codex-sdk";
 import type { CodexAuthStatus, OpenAIProviderId } from "../../shared/ipc";
-import { findOnPath, shellPathPending } from "../services/shellPath";
+import {
+  afterShellPath,
+  checkCliLookup,
+  findOnPath,
+  shellPathPending,
+} from "../services/shellPath";
 
 /** How an OpenAI provider drives the Codex harness: which binary, which
  *  credentials. The OpenAI counterpart of AuthStrategy (which configures the
@@ -32,16 +37,17 @@ export class CodexCli {
     private pathPending: () => Promise<void> | null = shellPathPending,
   ) {}
 
-  /** resolveBinary for readiness checks: while the login-shell PATH is
-   *  still being merged, "not found" is deferred to the run, which waits for
-   *  the PATH before resolving again (see SubscriptionCliAuth.validate). */
+  /** resolveBinary for readiness checks — see checkCliLookup. */
   validateBinary(): void {
-    try {
-      this.resolveBinary();
-    } catch (e) {
-      if (!this.getOverridePath?.() && this.pathPending()) return;
-      throw e;
-    }
+    checkCliLookup(() => this.resolveBinary(), {
+      overridden: !!this.getOverridePath?.(),
+      pending: this.pathPending(),
+    });
+  }
+
+  /** resolveBinary, after the login-shell PATH is in. */
+  resolveBinaryAsync(): Promise<string> {
+    return afterShellPath(() => this.resolveBinary(), this.pathPending);
   }
 
   /** Drop the memoized path so the next resolve looks at the disk again. */
@@ -97,12 +103,17 @@ export class CodexCli {
   private cachedStatus: CodexAuthStatus | null = null;
   private pendingStatus: Promise<CodexAuthStatus> | null = null;
 
-  /** Every answer is reused for STATUS_TTL_MS — signed out too, so a
+  /** Every verdict is reused for STATUS_TTL_MS — signed out too, so a
    *  signed-out user's image requests and health checks don't spawn the CLI
    *  each time. Settings' re-check, an explicit test and a finished in-app
    *  sign-in ask afresh ({ fresh: true }); an expired login surfaces as a
    *  failed turn anyway (classifyCodexFailure → ImageAuthFailed). */
   private remember(status: CodexAuthStatus): void {
+    // An error is no verdict (CLI missing, timeout): ask again next time.
+    if (status.error) {
+      this.cachedStatus = null;
+      return;
+    }
     this.cachedStatus = status;
     this.statusAt = Date.now();
   }
@@ -145,7 +156,7 @@ export class CodexCli {
   private async spawnStatus(): Promise<CodexAuthStatus> {
     let bin: string;
     try {
-      bin = this.resolveBinary();
+      bin = await this.resolveBinaryAsync();
     } catch (e) {
       return { loggedIn: false, error: String((e as Error).message) };
     }

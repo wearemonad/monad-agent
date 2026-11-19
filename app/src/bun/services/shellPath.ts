@@ -43,6 +43,34 @@ export function shellPathPending(): Promise<void> | null {
   return settled ? null : resolving;
 }
 
+/** Run `resolve` once the login-shell PATH is in — a CLI lookup made
+ *  sooner can miss an nvm or asdf install that lives on it. */
+export async function afterShellPath<T>(
+  resolve: () => T,
+  pending: () => Promise<void> | null = shellPathPending,
+): Promise<T> {
+  const p = pending();
+  if (p) await p;
+  return resolve();
+}
+
+/** A synchronous CLI readiness check (AuthStrategy.validate) that can't
+ *  wait: while the login-shell PATH is still pending, a "not found" may only
+ *  mean "not yet", so it is let through — the Turn itself waits for the PATH
+ *  before resolving again and reports a real miss then. A configured path
+ *  that doesn't exist is reported at once. */
+export function checkCliLookup(
+  resolve: () => unknown,
+  opts: { overridden: boolean; pending: Promise<void> | null },
+): void {
+  try {
+    resolve();
+  } catch (e) {
+    if (!opts.overridden && opts.pending) return;
+    throw e;
+  }
+}
+
 /** The first executable called `name` on `pathVar` — `which`, without a shell
  *  (and without blocking on one). */
 export function findOnPath(

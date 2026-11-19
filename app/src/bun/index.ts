@@ -220,7 +220,7 @@ perf.start();
 const foreground = new ForegroundGate({
   // Lazy: the agent services are built further down. A Turn they no longer
   // run stops holding background work back even if its end event was lost.
-  isTurnLive: (runId) =>
+  isTurnActive: (runId) =>
     agent.isTurnActive(runId) || codexAgent.isTurnActive(runId),
 });
 
@@ -295,7 +295,7 @@ const localAuth = new LocalOllamaAuth(
 
 /** In-app `claude auth login` for subscription mode (see ClaudeLogin). */
 const claudeLogin = new ClaudeLogin(
-  () => subscriptionAuth.resolveBinary(),
+  () => subscriptionAuth.resolveBinaryAsync(),
   (status) => {
     send()?.claudeAuthChanged(status);
     // Warm CLI processes gave up on the old token; the next message must
@@ -434,7 +434,7 @@ const appRuntime = makeAppRuntime(
         // The async check: an image request must never park the backend
         // thread (and with it every other thread's stream) on a spawnSync.
         cli: {
-          resolveBinary: () => codexCli.resolveBinary(),
+          resolveBinary: () => codexCli.resolveBinaryAsync(),
           status: () => codexCli.statusAsync(),
         },
         runTurn: sdkCodexTurn({
@@ -2235,7 +2235,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
             if (id === "openai-api-key") {
               return { ok: true, message: "OpenAI API key configured." };
             }
-            const found = `Codex CLI found: ${codexCli.resolveBinary()}`;
+            const found = `Codex CLI found: ${await codexCli.resolveBinaryAsync()}`;
             const status = await codexCli.statusAsync({ fresh: true });
             if (status.loggedIn) {
               return {
@@ -2264,7 +2264,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           if (id === "api-key")
             return { ok: true, message: "API key configured." };
           const status = await claudeLogin.status();
-          const found = `Claude CLI found: ${subscriptionAuth.resolveBinary()}`;
+          const found = `Claude CLI found: ${await subscriptionAuth.resolveBinaryAsync()}`;
           if (status.loggedIn) {
             return {
               ok: true,
@@ -2284,7 +2284,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
       codexAuthStatus: async () => codexCli.statusAsync(),
       codexLogin: async () => {
         try {
-          await runCodexLogin(codexCli.resolveBinary());
+          await runCodexLogin(await codexCli.resolveBinaryAsync());
           scheduleHealthRecheck();
           const status = await codexCli.statusAsync({ fresh: true });
           return status.loggedIn

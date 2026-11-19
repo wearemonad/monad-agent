@@ -2,7 +2,12 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
 import type { AuthMode } from "../../shared/ipc";
-import { findOnPath, shellPathPending } from "../services/shellPath";
+import {
+  afterShellPath,
+  checkCliLookup,
+  findOnPath,
+  shellPathPending,
+} from "../services/shellPath";
 
 export interface AuthStrategy {
   id: AuthMode;
@@ -74,17 +79,18 @@ export class SubscriptionCliAuth implements AuthStrategy {
     );
   }
 
-  /** Before the login shell's PATH has been merged (the first seconds after
-   *  a Finder launch), "not found" may only mean "not yet" — an nvm or asdf
-   *  install lives on that PATH. The run itself waits for the PATH before
-   *  sdkOptions() resolves again, so defer the verdict to it. */
+  /** See checkCliLookup: no spurious "not found" in the first seconds
+   *  after a Finder launch, before the login-shell PATH is in. */
   validate(): void {
-    try {
-      this.resolveBinary();
-    } catch (e) {
-      if (!this.getOverridePath?.() && this.pathPending()) return;
-      throw e;
-    }
+    checkCliLookup(() => this.resolveBinary(), {
+      overridden: !!this.getOverridePath?.(),
+      pending: this.pathPending(),
+    });
+  }
+
+  /** resolveBinary, after the login-shell PATH is in. */
+  resolveBinaryAsync(): Promise<string> {
+    return afterShellPath(() => this.resolveBinary(), this.pathPending);
   }
 
   sdkOptions() {
