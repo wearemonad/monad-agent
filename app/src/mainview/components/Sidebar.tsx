@@ -448,9 +448,7 @@ function ThreadList() {
                     type="button"
                     key={h.sessionId}
                     className="w-full rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-muted/50"
-                    onPointerDown={() =>
-                      perf.markClick("thread", h.sessionId)
-                    }
+                    onPointerDown={() => perf.markClick("thread", h.sessionId)}
                     onClick={() => {
                       // Carry the query into the conversation so ChatPane can
                       // highlight and scroll to the matches. (Raw store value:

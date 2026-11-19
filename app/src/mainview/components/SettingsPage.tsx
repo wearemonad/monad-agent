@@ -4656,8 +4656,8 @@ function AdvancedSection() {
               Performance diagnostics
             </span>
             <span className="block text-[0.6875rem] text-muted-foreground">
-              Records when the app stalls and how long clicks take to show,
-              in perf.log next to the app log. Costs next to nothing.
+              Records when the app stalls and how long clicks take to show, in
+              perf.log next to the app log. Costs next to nothing.
             </span>
           </label>
           <Switch
