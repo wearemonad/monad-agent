@@ -391,13 +391,14 @@ const send = () =>
 /** Last list pushed per sidebar channel (as JSON), for the active workspace:
  *  an unchanged list isn't re-sent. Every push of these channels goes through
  *  here, and getSidebarSnapshot records what it returned. */
-const lastPushed = new Map<string, string>();
+type SidebarChannel = "inbox" | "outbox" | "skills" | "knowledge";
+const lastPushed = new Map<SidebarChannel, string>();
 
 /** Thread rows last sent to the webview, per workspace (sessionsChanged
  *  carries only the rows that changed). */
-const sessionChanges = new SessionChangeTracker();
+const sentThreadRows = new SessionChangeTracker();
 /** Workspaces with a pending row check ("all" = every workspace). */
-let pendingSessionWs: Set<string> | "all" | null = null;
+let pendingRowWorkspaces: Set<string> | "all" | null = null;
 
 // Waits for answers on the app runtime (declared below; only used once a
 // run asks for permission).
@@ -1415,22 +1416,31 @@ function pushActiveLists() {
   pushKnowledge();
 }
 
-function pushIfChanged(channel: string, value: unknown, push: () => void) {
+function pushIfChanged(
+  channel: SidebarChannel,
+  value: unknown,
+  push: () => void,
+) {
   const json = JSON.stringify(value);
   if (lastPushed.get(channel) === json) return;
   lastPushed.set(channel, json);
   push();
 }
 
+/** Note what the webview now holds without sending (snapshot responses). */
+function recordPushed(channel: SidebarChannel, value: unknown) {
+  lastPushed.set(channel, JSON.stringify(value));
+}
+
 /** Send the sidebar the Thread rows that changed in `workspaceId` (every
  *  workspace when omitted). Coalesced: a burst of triggers — a session
  *  tagged, then its Turn ending — costs one listing per workspace. */
 function pushSessionChanges(workspaceId?: string) {
-  const scheduled = pendingSessionWs !== null;
-  if (!workspaceId) pendingSessionWs = "all";
-  else if (pendingSessionWs !== "all") {
-    pendingSessionWs ??= new Set();
-    pendingSessionWs.add(workspaceId);
+  const scheduled = pendingRowWorkspaces !== null;
+  if (!workspaceId) pendingRowWorkspaces = "all";
+  else if (pendingRowWorkspaces !== "all") {
+    pendingRowWorkspaces ??= new Set();
+    pendingRowWorkspaces.add(workspaceId);
   }
   if (!scheduled)
     setTimeout(() => void serialSessionWork(flushSessionChanges), 50);
@@ -1446,15 +1456,15 @@ function serialSessionWork<T>(job: () => Promise<T>): Promise<T> {
 }
 
 async function flushSessionChanges() {
-  const pending = pendingSessionWs;
-  pendingSessionWs = null;
+  const pending = pendingRowWorkspaces;
+  pendingRowWorkspaces = null;
   const targets = workspaces
     .list()
     .filter((ws) => pending === "all" || !pending || pending.has(ws.id));
   const changes: SessionChanges[] = [];
   for (const ws of targets) {
     try {
-      const change = sessionChanges.diff(ws.id, await listThreads(ws));
+      const change = sentThreadRows.diff(ws.id, await listThreads(ws));
       if (change) changes.push(change);
     } catch {
       // a workspace folder that vanished — its rows stay until a snapshot
@@ -2045,18 +2055,6 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         const ws = activeWs();
         return { sessions: await listThreads(ws) };
       },
-      listAllSessions: async () => {
-        const byWorkspace: Record<
-          string,
-          Awaited<ReturnType<typeof sessions.list>>
-        > = {};
-        await Promise.all(
-          workspaces.list().map(async (ws) => {
-            byWorkspace[ws.id] = await listThreads(ws);
-          }),
-        );
-        return { byWorkspace };
-      },
       getSidebarSnapshot: async () => {
         const list = workspaces.list();
         const byWorkspace: Record<string, SessionSummary[]> = {};
@@ -2064,7 +2062,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           Promise.all(
             list.map(async (ws) => {
               byWorkspace[ws.id] = await listThreads(ws);
-              sessionChanges.reset(ws.id, byWorkspace[ws.id]);
+              sentThreadRows.reset(ws.id, byWorkspace[ws.id]);
             }),
           ),
         );
@@ -2075,10 +2073,10 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           .listKnowledge()
           .docs.map((d) => d.path);
         // What the webview now holds — later pushes diff against it.
-        lastPushed.set("inbox", JSON.stringify(inbox));
-        lastPushed.set("outbox", JSON.stringify(outbox));
-        lastPushed.set("skills", JSON.stringify(skills));
-        lastPushed.set("knowledge", JSON.stringify(knowledgePaths));
+        recordPushed("inbox", inbox);
+        recordPushed("outbox", outbox);
+        recordPushed("skills", skills);
+        recordPushed("knowledge", knowledgePaths);
         return {
           byWorkspace,
           workspaces: list,
@@ -2182,7 +2180,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         drive.disconnect(id); // clear tokens for unregistered workspaces
         void wsEnv.deleteAll(id); // and Settings-entered credentials
         const ok = workspaces.remove(id);
-        sessionChanges.forget(id);
+        sentThreadRows.forget(id);
         pushWorkspaces();
         return { ok };
       },

@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import { deriveArtifacts, type ArtifactState } from "../shared/artifacts";
-import { keepIfEqual, keepListIfEqual } from "./lib/keepIfEqual";
+import {
+  keepIfEqual,
+  keepListIfEqual,
+  keepRecordIfEqual,
+} from "./lib/keepIfEqual";
 import type { SectionId } from "./threadGroups";
 import type {
   AgentStreamEvent,
@@ -290,17 +294,14 @@ type MonadState = ThreadSnapshot & {
 
 const bySession = (r: SessionSummary) => r.sessionId;
 
+/** Thread lists by workspace id, unchanged rows and lists kept. */
 function keepSessionsByWorkspace(
   prev: Record<string, SessionSummary[]>,
   next: Record<string, SessionSummary[]>,
 ): Record<string, SessionSummary[]> {
-  let same = Object.keys(prev).length === Object.keys(next).length;
-  const out: Record<string, SessionSummary[]> = {};
-  for (const [id, rows] of Object.entries(next)) {
-    out[id] = prev[id] ? keepListIfEqual(prev[id], rows, bySession) : rows;
-    if (out[id] !== prev[id]) same = false;
-  }
-  return same ? prev : out;
+  return keepRecordIfEqual(prev, next, (p, n) =>
+    keepListIfEqual(p, n, bySession),
+  );
 }
 
 /** Upsert/remove Thread rows, newest first (the sidebar's order). */

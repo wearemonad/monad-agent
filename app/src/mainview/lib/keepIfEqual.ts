@@ -26,3 +26,20 @@ export function keepListIfEqual<T>(
   });
   return same ? (prev as T[]) : out;
 }
+
+/** For a record of values (e.g. Thread lists by workspace id): each entry goes
+ *  through `keepValue` (so its own reuse rules apply), and an entirely
+ *  unchanged record — same keys, every entry kept — returns `prev`. */
+export function keepRecordIfEqual<V>(
+  prev: Record<string, V>,
+  next: Record<string, V>,
+  keepValue: (prev: V, next: V) => V,
+): Record<string, V> {
+  let same = Object.keys(prev).length === Object.keys(next).length;
+  const out: Record<string, V> = {};
+  for (const [key, value] of Object.entries(next)) {
+    out[key] = key in prev ? keepValue(prev[key], value) : value;
+    if (out[key] !== prev[key]) same = false;
+  }
+  return same ? prev : out;
+}

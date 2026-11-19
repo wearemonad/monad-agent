@@ -19,7 +19,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { ThinkingOrb } from "thinking-orbs";
+import { orbFrameUrl } from "../lib/orbFrame";
+import { useResolvedScheme } from "../lib/theme";
 import type { ContentHit, SessionKind, SessionSummary } from "../../shared/ipc";
 import { useStore } from "../store";
 import {
@@ -62,15 +63,23 @@ const INITIAL_THREADS_SHOWN = 12;
 /** Briefings accumulate one per weekday — show the latest few. */
 const INITIAL_BRIEFINGS_SHOWN = 3;
 
-/** The working cue for a sidebar row: one still frame of the thinking orb
- *  (drawn once — no per-frame canvas work for every working Thread), with a
- *  gentle CSS pulse that only touches transform and opacity, so it runs on
- *  the compositor. The live canvas orb stays in the open Thread's cue. */
+/** The working cue for a sidebar row: a still frame of the thinking orb (one
+ *  shared image per theme — no canvas per working Thread) with a gentle CSS
+ *  pulse that only touches transform and opacity, so it runs on the
+ *  compositor. The live canvas orb stays in the open Thread's cue. */
 function SidebarOrb() {
+  const src = orbFrameUrl(20, useResolvedScheme() === "dark");
+  if (!src) return null; // no 2D canvas — the row simply shows no cue
   return (
-    <span className="orb-pulse flex" aria-hidden>
-      <ThinkingOrb state="working" size={20} paused aria-hidden />
-    </span>
+    <img
+      src={src}
+      width={20}
+      height={20}
+      alt=""
+      aria-hidden
+      draggable={false}
+      className="orb-pulse block shrink-0"
+    />
   );
 }
 

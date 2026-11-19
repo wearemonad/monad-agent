@@ -628,10 +628,6 @@ export type MonadRPC = {
         response: { ok: boolean };
       };
       listSessions: { params: {}; response: { sessions: SessionSummary[] } };
-      listAllSessions: {
-        params: {};
-        response: { byWorkspace: Record<string, SessionSummary[]> };
-      };
       /** All sidebar lists in one response — used only on mount and on a
        *  workspace switch; everything else arrives as targeted pushes. */
       getSidebarSnapshot: { params: {}; response: SidebarSnapshot };
