@@ -3,6 +3,7 @@ import { ChevronDown, Search, Star } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ProviderId } from "../../shared/ipc";
 import { useStore } from "../store";
+import { perf } from "../lib/perf";
 import {
   choiceKey,
   DEFAULT_MODEL,
@@ -370,6 +371,7 @@ export function ModelPicker() {
             <button
               type="button"
               className="border-t border-border px-3 py-2 text-left text-[0.6875rem] text-muted-foreground hover:text-foreground"
+              onPointerDown={() => perf.markClick("settings")}
               onClick={() => {
                 setOpen(false);
                 useStore.getState().openSettingsAt("providers");

@@ -11,6 +11,7 @@ import {
   type ToolOption,
 } from "../../shared/toolCatalog";
 import { useStore } from "../store";
+import { perf } from "../lib/perf";
 import { api } from "../rpc";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -158,6 +159,7 @@ export function PermissionsChip({ active }: { active?: WorkspaceInfo }) {
           <button
             type="button"
             className="flex w-full items-center gap-1.5 border-t border-border/60 px-3 py-2 text-left text-[0.6875rem] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+            onPointerDown={() => perf.markClick("settings")}
             onClick={() => {
               setOpen(false);
               useStore.getState().openSettingsAt("workspaces");

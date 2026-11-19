@@ -38,6 +38,8 @@ import {
   type LucideIcon,
   SearchIcon,
   DollarSign,
+  Gauge,
+  Copy,
 } from "lucide-react";
 import {
   AlertDialog,
@@ -169,6 +171,7 @@ const SECTIONS = [
   { id: "images", label: "Image models", icon: ImageIcon },
   { id: "google", label: "Google", icon: Cloud },
   { id: "troubleshooting", label: "Troubleshooting", icon: LifeBuoy },
+  { id: "advanced", label: "Advanced", icon: Gauge },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -294,6 +297,7 @@ export function SettingsPage() {
           {section === "images" && <ImageModelsSection />}
           {section === "google" && <GoogleClientSection />}
           {section === "troubleshooting" && <TroubleshootingSection />}
+          {section === "advanced" && <AdvancedSection />}
         </div>
       </div>
     </div>
@@ -4609,6 +4613,100 @@ function TroubleshootingSection() {
         <FieldError className="mt-3 text-xs">
           Couldn't export diagnostics: {result.error}
         </FieldError>
+      )}
+    </section>
+  );
+}
+
+/** Performance diagnostics (internal/PARALLEL-THREADS-PR1-MEASURE.html):
+ *  the switch for lag / click-to-paint logging, and a one-click report to
+ *  paste into an issue so nobody has to dig through perf.log. */
+function AdvancedSection() {
+  const settings = useStore((s) => s.settings);
+  const [copied, setCopied] = useState<"ok" | "error" | null>(null);
+  const [copying, setCopying] = useState(false);
+  if (!settings) return null;
+  const on = settings.perfDiagnostics;
+
+  const copyReport = async () => {
+    setCopying(true);
+    setCopied(null);
+    try {
+      await navigator.clipboard.writeText(await api.perfReport());
+      setCopied("ok");
+    } catch {
+      setCopied("error");
+    } finally {
+      setCopying(false);
+    }
+  };
+
+  return (
+    <section>
+      <SectionHeader title="Advanced">
+        Tools for tracking down slowness. Nothing here changes how Monad
+        behaves.
+      </SectionHeader>
+
+      <div className="rounded-xl border border-border divide-y divide-border overflow-hidden">
+        <div className="flex items-center gap-3 px-3 py-3">
+          <Gauge size={15} className="shrink-0 text-muted-foreground" />
+          <label htmlFor="perf-diagnostics" className="min-w-0 flex-1">
+            <span className="block text-sm font-medium">
+              Performance diagnostics
+            </span>
+            <span className="block text-[0.6875rem] text-muted-foreground">
+              Records when the app stalls and how long clicks take to show, in
+              perf.log next to the app log. Costs next to nothing.
+            </span>
+          </label>
+          <Switch
+            id="perf-diagnostics"
+            checked={on}
+            onCheckedChange={(next) =>
+              void api.updateSettings({ perfDiagnostics: next })
+            }
+          />
+        </div>
+        <div className="flex items-center gap-3 px-3 py-3">
+          <Copy size={15} className="shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-medium">
+              Copy performance report
+            </span>
+            <span className="block text-[0.6875rem] text-muted-foreground">
+              A summary of the last 15 minutes: stalls, click times, slow
+              requests and message rates. Paste it into an issue.
+            </span>
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!on || copying}
+            onClick={() => void copyReport()}
+          >
+            {copying ? <Loader2 className="animate-spin" /> : <Copy />}
+            Copy
+          </Button>
+        </div>
+      </div>
+
+      {copied === "ok" && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          <Check size={12} className="inline mr-1 text-brand" />
+          Copied to the clipboard.
+        </p>
+      )}
+      {copied === "error" && (
+        <FieldError className="mt-3 text-xs">
+          Couldn't copy the report. Try again.
+        </FieldError>
+      )}
+      {!on && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          Switch diagnostics on, use the app as usual for a few minutes, then
+          copy the report.
+        </p>
       )}
     </section>
   );

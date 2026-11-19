@@ -9,6 +9,7 @@
     "hmr": "vite --port 5173",
     "icons": "bun scripts/generate-iconset.ts",
     "build:canary": "bun run icons && vite build && electrobun build --env=canary",
+    "perf:stress": "bun scripts/perf-stress.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test src",
     "postinstall": "electrobun sync"
