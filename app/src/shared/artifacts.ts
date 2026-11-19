@@ -94,11 +94,19 @@ export function deriveArtifacts(
   for (const item of items) {
     if (item.type !== "artifact") continue;
     const prior = artifacts[item.artifactId];
-    artifacts[item.artifactId] = {
-      title: item.title,
-      type: item.artifactType,
-      versions: [...(prior?.versions ?? []), item.content],
-    };
+    // Append in place (the state is built fresh here) — copying the version
+    // list per op made replay quadratic in an artifact's versions.
+    if (prior) {
+      prior.title = item.title;
+      prior.type = item.artifactType;
+      prior.versions.push(item.content);
+    } else {
+      artifacts[item.artifactId] = {
+        title: item.title,
+        type: item.artifactType,
+        versions: [item.content],
+      };
+    }
   }
   return artifacts;
 }

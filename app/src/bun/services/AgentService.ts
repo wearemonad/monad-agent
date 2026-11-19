@@ -358,7 +358,7 @@ export class AgentService {
     /** Workspace permission profile check (always-allow rules). */
     private isAlwaysAllowed: (workspaceId: string, toolName: string) => boolean,
     /** Fired when a session becomes visible (tagged) — refreshes the sidebar. */
-    private onSessionsChanged: () => void = () => {},
+    private onSessionsChanged: (workspaceId?: string) => void = () => {},
     /** Per-workspace credentials entered in Settings (Keychain-backed). */
     private getAppEnv: (
       workspaceId: string,
@@ -1155,7 +1155,7 @@ export class AgentService {
     ) {
       s.tagged = true;
     }
-    this.onSessionsChanged();
+    this.onSessionsChanged(s.workspaceId);
   }
 
   /** Mark a session as this workspace's Monad thread: record its owner in
@@ -1360,7 +1360,7 @@ export class AgentService {
       ) {
         tagged = true;
       }
-      this.onSessionsChanged();
+      this.onSessionsChanged(opts.workspaceId);
     };
     const log = (kind: string, detail: string) =>
       this.logActivity(opts.workspacePath, { kind, detail, runId });

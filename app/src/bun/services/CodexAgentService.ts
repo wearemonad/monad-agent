@@ -319,7 +319,7 @@ export class CodexAgentService {
     private emit: (event: AgentStreamEvent) => void,
     private threads: CodexThreadStore,
     /** Fired when a thread is created or updated — refreshes the sidebar. */
-    private onSessionsChanged: () => void = () => {},
+    private onSessionsChanged: (workspaceId?: string) => void = () => {},
     /** Per-workspace credentials entered in Settings (Keychain-backed). */
     private getAppEnv: (
       workspaceId: string,
@@ -442,7 +442,7 @@ export class CodexAgentService {
       const run = this.runs.get(runId);
       if (run) run.threadId = record.threadId;
       save();
-      this.onSessionsChanged();
+      this.onSessionsChanged(opts.workspaceId);
       this.emit({
         kind: "run-started",
         runId,
@@ -591,7 +591,7 @@ export class CodexAgentService {
     } finally {
       this.runs.delete(runId);
       save();
-      this.onSessionsChanged();
+      this.onSessionsChanged(opts.workspaceId);
     }
   }
 }

@@ -12,12 +12,7 @@ import { bytesToBase64 } from "./util";
 import { forwardConsole } from "./lib/consoleForward";
 import { zoomIn, zoomOut, zoomReset } from "./lib/zoom";
 import { perf } from "./lib/perf";
-
-type WebviewMessageHandlers = {
-  [K in keyof MonadRPC["webview"]["messages"]]: (
-    payload: MonadRPC["webview"]["messages"][K],
-  ) => void;
-};
+import { createMessageHandlers } from "./messageHandlers";
 
 /** Count every incoming message by type (stream events by kind) for the
  *  performance diagnostics — the bursts after a bun stall show up here. */
@@ -37,69 +32,22 @@ function counted<T extends Record<string, (payload: any) => void>>(
   return out as T;
 }
 
+const { handlers: messageHandlers, flushStream } = createMessageHandlers({
+  refreshSidebar,
+  getSettings: () => void api.getSettings(),
+  refreshOllama: () => void refreshOllama(),
+  zoom: (direction) => {
+    if (direction === "in") zoomIn();
+    else if (direction === "out") zoomOut();
+    else zoomReset();
+  },
+});
+
 const rpc = Electroview.defineRPC<MonadRPC>({
   maxRequestTime: 300_000,
   handlers: {
     requests: {},
-    messages: counted<WebviewMessageHandlers>({
-      streamEvent: (event) => {
-        useStore.getState().applyEvent(event);
-        // runs move inbox files, write outbox drafts, and create sessions —
-        // refresh the whole sidebar when one ends
-        if (event.kind === "run-finished" || event.kind === "run-error")
-          void refreshSidebar();
-      },
-      permissionRequest: (req) => useStore.getState().enqueuePermission(req),
-      workspaceChanged: () => {
-        useStore.getState().newChat();
-        void refreshSidebar();
-      },
-      workspacesUpdated: ({ workspaces }) =>
-        useStore.getState().setWorkspaces(workspaces),
-      driveEvent: (e) => useStore.getState().applyDriveEvent(e),
-      inboxChanged: ({ files }) => useStore.getState().setInbox(files),
-      ingestChanged: (status) => useStore.getState().setIngest(status),
-      backgroundChanged: ({ run }) => useStore.getState().setBackgroundRun(run),
-      outboxChanged: ({ files }) => useStore.getState().setOutbox(files),
-      reviewChanged: ({ items }) => useStore.getState().setReview(items),
-      healthChanged: ({ issues }) => useStore.getState().setHealth(issues),
-      claudeAuthChanged: (status) => useStore.getState().setClaudeAuth(status),
-      claudeLoginFinished: (r) => useStore.getState().setClaudeLoginResult(r),
-      sessionsChanged: () => void refreshSidebar(),
-      updateStatus: (u) => useStore.getState().setUpdateStatus(u),
-      openSettings: ({ section }) => {
-        const store = useStore.getState();
-        if (section) store.openSettingsAt(section);
-        else store.setSettingsOpen(true);
-      },
-      showAbout: () => {
-        // Version info comes from settings — refresh so the dialog is never
-        // showing a stale snapshot (or nothing, right after startup).
-        void api.getSettings();
-        useStore.getState().setAboutOpen(true);
-      },
-      newThread: () => {
-        // Leave the settings page if it's covering the chat — a fresh thread
-        // you can't see isn't a fresh thread.
-        useStore.getState().setSettingsOpen(false);
-        useStore.getState().newChat();
-      },
-      // Fires only on mouse clicks in the View menu — the keyboard shortcuts
-      // are claimed first by the webview handler in AppRoot (see there).
-      zoomCommand: ({ direction }) => {
-        if (direction === "in") zoomIn();
-        else if (direction === "out") zoomOut();
-        else zoomReset();
-      },
-      ollamaPullProgress: (p) => {
-        useStore.getState().applyPullProgress(p);
-        // a finished download changes the installed list (and maybe the default)
-        if (p.done && !p.error) {
-          void refreshOllama();
-          void api.getSettings();
-        }
-      },
-    }),
+    messages: counted(messageHandlers),
   },
 });
 
@@ -206,10 +154,12 @@ export const api = {
         runOptions: currentRunOptions(),
       });
       if ("error" in res) {
+        flushStream();
         store.applyEvent({ kind: "run-error", runId, error: res.error });
       }
     } catch (e) {
       // Transport failure — release the thread (request() already surfaced it).
+      flushStream();
       store.applyEvent({
         kind: "run-error",
         runId,
@@ -239,13 +189,18 @@ export const api = {
     // Already open with a run streaming: re-fetching would clone the thread
     // into a stale idle copy next to the live one — there's nothing to load.
     if (s.resumeSessionId === sessionId && s.runState === "running") return;
+    // A Thread already in memory (streaming in the background, or recently
+    // left) has newer state than disk: switch to it, no history fetch.
+    flushStream();
+    if (useStore.getState().switchToThread(sessionId)) return;
     const res = await request("getSessionHistory", { sessionId });
+    flushStream();
     useStore.getState().openHistory(sessionId, res.items, res.contextTokens);
   },
 
   async renameSession(sessionId: string, title: string) {
+    // bun pushes the renamed row (sessionsChanged)
     const res = await request("renameSession", { sessionId, title });
-    if (res.ok) await refreshSidebar();
     return res.ok;
   },
 
@@ -262,7 +217,7 @@ export const api = {
       useStore.getState().dropThreadForSession(sessionId);
       if (pinnedSessions.includes(sessionId))
         useStore.getState().togglePin(sessionId);
-      await refreshSidebar();
+      // bun pushes the row's removal (sessionsChanged)
     }
     return res.ok;
   },
@@ -302,19 +257,14 @@ export const api = {
     return request("addWorkspace", { create: { parentDir, name, templateId } });
   },
 
-  /** Switch a workspace skill on/off, then refresh the skill list it feeds. */
+  /** Switch a workspace skill on/off (bun pushes the new skill list). */
   async setSkillEnabled(workspaceId: string, skill: string, enabled: boolean) {
     await request("setSkillEnabled", { workspaceId, skill, enabled });
-    const res = await request("listSkills", {});
-    useStore.getState().setSkills(res.skills);
   },
 
-  /** Delete a user-imported skill, then refresh the skill list it feeds. */
+  /** Delete a user-imported skill (bun pushes the new skill list). */
   async deleteSkill(workspaceId: string, skill: string) {
-    const res = await request("deleteSkill", { workspaceId, skill });
-    const skills = await request("listSkills", {});
-    useStore.getState().setSkills(skills.skills);
-    return res;
+    return request("deleteSkill", { workspaceId, skill });
   },
 
   /** Show a skill's SKILL.md in the Finder — editing happens there, not in-app. */
@@ -563,7 +513,7 @@ export const api = {
     } else if (res.error) {
       store.push({ type: "info", text: res.error });
     }
-    void refreshInbox();
+    // bun pushed the inbox when it saved the page (inboxChanged)
   },
 
   async setWatchFolder(workspaceId: string, path?: string) {
@@ -718,9 +668,6 @@ export const api = {
   async toggleJob(workspaceId: string, jobId: string) {
     await request("toggleJob", { workspaceId, jobId });
   },
-
-  refreshSidebar,
-  refreshInbox,
 };
 
 function buildJob(job: {
@@ -734,39 +681,12 @@ function buildJob(job: {
   return job;
 }
 
+/** Every sidebar list in one RPC — only on mount and on a workspace switch.
+ *  Everything else arrives as targeted pushes (sessionsChanged, inboxChanged,
+ *  skillsChanged, …). */
 export async function refreshSidebar() {
-  const [all, w, i, o, skills, knowledge, review, health, ingest, background] =
-    await Promise.all([
-      request("listAllSessions", {}),
-      request("listWorkspaces", {}),
-      request("listInbox", {}),
-      request("listOutbox", {}),
-      request("listSkills", {}),
-      request("listKnowledge", {}),
-      request("listReview", {}),
-      request("listHealth", {}),
-      request("ingestStatus", {}),
-      request("backgroundStatus", {}),
-    ]);
-  const active = w.workspaces.find((ws) => ws.active);
-  useStore.getState().setAllSessions(all.byWorkspace);
-  useStore
-    .getState()
-    .setSessions(active ? (all.byWorkspace[active.id] ?? []) : []);
-  useStore.getState().setWorkspaces(w.workspaces);
-  useStore.getState().setInbox(i.files);
-  useStore.getState().setIngest(ingest);
-  useStore.getState().setBackgroundRun(background.run);
-  useStore.getState().setOutbox(o.files);
-  useStore.getState().setSkills(skills.skills);
-  useStore.getState().setKnowledgePaths(knowledge.docs.map((d) => d.path));
-  useStore.getState().setReview(review.items);
-  useStore.getState().setHealth(health.issues);
-}
-
-export async function refreshInbox() {
-  const i = await request("listInbox", {});
-  useStore.getState().setInbox(i.files);
+  const snap = await request("getSidebarSnapshot", {});
+  useStore.getState().applySidebarSnapshot(snap);
 }
 
 // Report window focus so the bun side can keep "quiet when focused"

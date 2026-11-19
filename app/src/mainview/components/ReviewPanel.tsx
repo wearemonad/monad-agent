@@ -9,7 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { useStore } from "../store";
-import { api, refreshSidebar } from "../rpc";
+import { api } from "../rpc";
 import { Button } from "@/components/ui/button";
 
 /** Ingest review queue — every knowledge doc an ingest run added or updated,
@@ -27,7 +27,7 @@ export function ReviewPanel() {
     if (!res.ok && res.error) {
       useStore.getState().push({ type: "info", text: res.error });
     }
-    void refreshSidebar();
+    // bun pushes the new review queue and knowledge list
   };
 
   return (

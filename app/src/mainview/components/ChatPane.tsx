@@ -1,6 +1,7 @@
 /** biome-ignore-all lint/a11y/useButtonType: there is no <form> in this view, so
  *  no button here can default to submitting one — they are all click targets. */
 import {
+  type ComponentProps,
   memo,
   Profiler,
   useCallback,
@@ -36,7 +37,8 @@ import { useStore } from "../store";
 import { api } from "../rpc";
 import { perf } from "../lib/perf";
 import { useSmoothText } from "../lib/smoothText";
-import { ActivityGroup, type ActivityItem } from "./ToolCallCard";
+import { ActivityGroup } from "./ToolCallCard";
+import { toBlocks, type MessageBlock } from "../transcriptBlocks";
 import { ARTIFACT_ICONS } from "./ArtifactPanel";
 import { EmailDraftCard } from "./EmailDraftCard";
 import { PermissionCards } from "./PermissionCards";
@@ -360,99 +362,81 @@ function RememberButton({
   );
 }
 
-/** Assistant markdown with clickable citations: inline `path.md` that matches a
- *  known knowledge doc opens it in the preview modal. Memoized: parsing is the
- *  expensive part of a transcript render, and a completed message's text never
- *  changes — only the streaming tail should ever re-parse. */
+/** knowledgePaths as a Set, built once per list (the selector below runs on
+ *  every store update, for every citation on screen). */
+const knowledgeSets = new WeakMap<string[], Set<string>>();
+function knowledgeSet(paths: string[]): Set<string> {
+  let set = knowledgeSets.get(paths);
+  if (!set) {
+    set = new Set(paths);
+    knowledgeSets.set(paths, set);
+  }
+  return set;
+}
+
+/** Inline code in assistant markdown. A `path.md` that matches a known
+ *  knowledge doc becomes a clickable citation. It subscribes to the knowledge
+ *  list itself with a boolean selector, so a knowledge-list change re-renders
+ *  only the affected citations and never re-parses the markdown around them. */
+function KnowledgeCode({
+  node,
+  className,
+  children,
+  ...props
+}: ComponentProps<"code"> & { node?: unknown }) {
+  void node;
+  // v9 has no `inline` flag: fenced blocks carry a language-* class.
+  const isBlock = /\blanguage-/.test(className ?? "");
+  const rel = isBlock
+    ? null
+    : String(children)
+        .trim()
+        .replace(/^knowledge\//, "")
+        .replace(/^\.\//, "");
+  const isDoc = useStore((s) =>
+    rel === null ? false : knowledgeSet(s.knowledgePaths).has(rel),
+  );
+  if (rel !== null && isDoc) {
+    return (
+      <button
+        className="citation text-brand underline decoration-dotted underline-offset-2 hover:text-brand"
+        title={`Open knowledge/${rel}`}
+        onClick={() => useStore.getState().openKnowledgeAt(rel)}
+      >
+        {children}
+      </button>
+    );
+  }
+  return (
+    <code className={className} {...props}>
+      {children}
+    </code>
+  );
+}
+
+const assistantMarkdownComponents = {
+  ...safeMarkdownComponents,
+  code: KnowledgeCode,
+};
+
+/** Assistant markdown with clickable citations (KnowledgeCode). Memoized on
+ *  text alone: parsing is the expensive part of a transcript render, and a
+ *  completed message's text never changes — only the streaming tail should
+ *  ever re-parse. */
 const AssistantMarkdown = memo(function AssistantMarkdown({
   text,
 }: {
   text: string;
 }) {
-  const knowledgePaths = useStore((s) => s.knowledgePaths);
-  const pathSet = useMemo(() => new Set(knowledgePaths), [knowledgePaths]);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      components={{
-        ...safeMarkdownComponents,
-        code({ node, className, children, ...props }) {
-          // v9 has no `inline` flag: fenced blocks carry a language-* class.
-          void node;
-          const isBlock = /\blanguage-/.test(className ?? "");
-          if (!isBlock) {
-            const rel = String(children)
-              .trim()
-              .replace(/^knowledge\//, "")
-              .replace(/^\.\//, "");
-            if (pathSet.has(rel)) {
-              return (
-                <button
-                  className="citation text-brand underline decoration-dotted underline-offset-2 hover:text-brand"
-                  title={`Open knowledge/${rel}`}
-                  onClick={() => useStore.getState().openKnowledgeAt(rel)}
-                >
-                  {children}
-                </button>
-              );
-            }
-          }
-          return (
-            <code className={className} {...props}>
-              {children}
-            </code>
-          );
-        },
-      }}
+      components={assistantMarkdownComponents}
     >
       {text}
     </ReactMarkdown>
   );
 });
-
-/** Transcript blocks: consecutive tool calls + reasoning fold into one
- *  activity accordion (keyed by the run's first entry so its open/closed
- *  state survives streaming appends); everything else renders on its own. */
-type MessageBlock =
-  | { kind: "activity"; key: string; entries: ActivityItem[] }
-  | {
-      kind: "item";
-      key: string;
-      item: Exclude<ChatItem, { type: "tool" | "thinking" }>;
-      /** For a login-needed card: the user message whose run failed, so
-       *  the card can offer to send it again once signed in. */
-      retryPrompt?: string;
-    };
-
-function toBlocks(items: ChatItem[]): MessageBlock[] {
-  const blocks: MessageBlock[] = [];
-  items.forEach((item, i) => {
-    if (item.type === "tool" || item.type === "thinking") {
-      const last = blocks[blocks.length - 1];
-      if (last?.kind === "activity") last.entries.push(item);
-      else
-        blocks.push({
-          kind: "activity",
-          key: `activity-${i}`,
-          entries: [item],
-        });
-    } else if (item.type === "login-needed") {
-      const lastUser = items
-        .slice(0, i)
-        .reverse()
-        .find((it) => it.type === "user");
-      blocks.push({
-        kind: "item",
-        key: `item-${i}`,
-        item,
-        ...(lastUser?.type === "user" ? { retryPrompt: lastUser.text } : {}),
-      });
-    } else {
-      blocks.push({ kind: "item", key: `item-${i}`, item });
-    }
-  });
-  return blocks;
-}
 
 /** An image the agent generated, shown from where the harness left it (the
  *  transcript stores only its path). Nothing is copied unless the user
@@ -547,8 +531,8 @@ function GeneratedImage({ path, name }: { path: string; name: string }) {
 /** One transcript block, memoized. The streaming typewriter re-renders
  *  <Messages> on every reveal tick, and without this each frame would re-run
  *  the whole transcript through ReactMarkdown. Block objects are stable
- *  between ticks (toBlocks is memoized on items), so the shallow compare
- *  bails everywhere except where the transcript actually changed. */
+ *  across ticks AND across item appends (toBlocks reuses unchanged blocks),
+ *  so the shallow compare bails everywhere except the block that changed. */
 const TranscriptBlock = memo(function TranscriptBlock({
   block,
   interstitial,
@@ -690,7 +674,13 @@ function Messages() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
-  const blocks = useMemo(() => toBlocks(items), [items]);
+  // Reuses the previous render's block objects wherever their items are
+  // unchanged, so only the growing block re-renders (TranscriptBlock memo).
+  const prevBlocks = useRef<MessageBlock[]>([]);
+  const blocks = useMemo(
+    () => (prevBlocks.current = toBlocks(items, prevBlocks.current)),
+    [items],
+  );
 
   // Mirror of pinnedRef as state, so the scroll-to-end pill can render when
   // the user has scrolled up. (The ref stays: the autoscroll effect reads it

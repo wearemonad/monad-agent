@@ -15,8 +15,11 @@ type ActionState =
  *  and human-clicked actions. The agent only presented this data — every path
  *  to Gmail/outbox starts with a click here. */
 export function EmailDraftCard({ draft }: { draft: EmailDraftData }) {
-  const workspaces = useStore((s) => s.workspaces);
-  const googleConnected = !!workspaces.find((w) => w.active)?.drive?.email;
+  // A boolean selector: workspace pushes that don't flip it don't re-render
+  // every draft card in the transcript.
+  const googleConnected = useStore(
+    (s) => !!s.workspaces.find((w) => w.active)?.drive?.email,
+  );
   const [variantIdx, setVariantIdx] = useState(0);
   const [copied, setCopied] = useState(false);
   const [action, setAction] = useState<ActionState>({ phase: "idle" });

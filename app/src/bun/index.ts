@@ -25,6 +25,8 @@ import type {
   MonadRPC,
   OpenAIProviderId,
   ProviderId,
+  SessionChanges,
+  SessionSummary,
   WorkspaceInfo,
 } from "../shared/ipc";
 import { isOpenAIProvider, jobKind } from "../shared/ipc";
@@ -158,6 +160,7 @@ import { BackgroundRuns } from "./services/BackgroundRuns";
 import { schedulerLoops } from "./services/SchedulerLoop";
 import { PerfMonitor } from "./services/PerfMonitor";
 import { ForegroundGate } from "./services/ForegroundGate";
+import { SessionChangeTracker } from "./services/sessionChanges";
 import {
   appendFakeTurn,
   isFakeSessionId,
@@ -384,6 +387,17 @@ function authForRun(
 let windowReady = false;
 const send = () =>
   windowReady ? (mainWindow.webview.rpc as any)?.send : undefined;
+
+/** Last list pushed per sidebar channel (as JSON), for the active workspace:
+ *  an unchanged list isn't re-sent. Every push of these channels goes through
+ *  here, and getSidebarSnapshot records what it returned. */
+const lastPushed = new Map<string, string>();
+
+/** Thread rows last sent to the webview, per workspace (sessionsChanged
+ *  carries only the rows that changed). */
+const sessionChanges = new SessionChangeTracker();
+/** Workspaces with a pending row check ("all" = every workspace). */
+let pendingSessionWs: Set<string> | "all" | null = null;
 
 // Waits for answers on the app runtime (declared below; only used once a
 // run asks for permission).
@@ -708,6 +722,9 @@ function backgroundRunInfo(): BackgroundRunInfo | null {
 
 function pushBackground() {
   send()?.backgroundChanged({ run: backgroundRunInfo() });
+  // Background runs (ingest, briefings) write knowledge docs and outbox
+  // drafts; their start/finish is when those lists can change.
+  pushActiveLists();
 }
 
 function pushIngestStatus() {
@@ -1145,6 +1162,10 @@ function routeAgentEvent(event: AgentStreamEvent): void {
     foreground.turnEnded(event.runId);
     const ctx = interactiveRuns.get(event.runId);
     if (ctx) {
+      // The sidebar learns what the run changed from targeted pushes — the
+      // webview no longer re-fetches every list when a Turn ends.
+      pushSessionChanges(ctx.workspaceId);
+      pushActiveLists();
       const wsName = workspaces.get(ctx.workspaceId)?.name ?? "Monad";
       if (event.kind === "run-finished") {
         notify(wsName, `Done: “${ctx.promptSnippet}”`, {
@@ -1205,7 +1226,7 @@ const agent = new AgentService(
   currentAuth,
   buildMcpServers,
   (workspaceId, toolName) => workspaces.isAlwaysAllowed(workspaceId, toolName),
-  () => send()?.sessionsChanged({}),
+  pushSessionChanges,
   (workspaceId) => wsEnv.get(workspaceId),
   (workspacePath, entry) => activity.append(workspacePath, entry),
   (workspacePath, costUsd, turns) =>
@@ -1230,7 +1251,7 @@ const agent = new AgentService(
 const codexAgent = new CodexAgentService(
   routeLabelled,
   codexThreads,
-  () => send()?.sessionsChanged({}),
+  pushSessionChanges,
   (workspaceId) => wsEnv.get(workspaceId),
   (workspacePath, entry) => activity.append(workspacePath, entry),
   (workspaceId, workspacePath) =>
@@ -1241,8 +1262,8 @@ const scheduler = new SchedulerService(
   workspaces,
   agent,
   () => {
-    send()?.sessionsChanged({});
-    send()?.outboxChanged({ files: workspaces.listOutbox() });
+    pushSessionChanges();
+    pushOutbox();
   },
   // A scheduler-owned run started/finished — update the composer's
   // background-run indicator (label + abort affordance).
@@ -1359,12 +1380,87 @@ function activeWs(): WorkspaceInfo {
 
 function pushWorkspaces() {
   send()?.workspacesUpdated({ workspaces: workspaces.list() });
+  // Skill toggles, deletes and imports land here too.
+  pushSkills();
   // File → Workspace mirrors the list and its active checkmark.
   rebuildAppMenu();
 }
 
 function pushInbox() {
-  send()?.inboxChanged({ files: workspaces.listInbox() });
+  const files = workspaces.listInbox();
+  pushIfChanged("inbox", files, () => send()?.inboxChanged({ files }));
+}
+
+function pushOutbox() {
+  const files = workspaces.listOutbox();
+  pushIfChanged("outbox", files, () => send()?.outboxChanged({ files }));
+}
+
+function pushSkills() {
+  const skills = workspaces.listSkills();
+  pushIfChanged("skills", skills, () => send()?.skillsChanged({ skills }));
+}
+
+function pushKnowledge() {
+  const paths = workspaces.listKnowledge().docs.map((d) => d.path);
+  pushIfChanged("knowledge", paths, () => send()?.knowledgeChanged({ paths }));
+}
+
+/** After a run ends: the lists a run can change (it moves inbox files, writes
+ *  outbox drafts, knowledge docs and skills) — each pushed only if it did. */
+function pushActiveLists() {
+  pushInbox();
+  pushOutbox();
+  pushSkills();
+  pushKnowledge();
+}
+
+function pushIfChanged(channel: string, value: unknown, push: () => void) {
+  const json = JSON.stringify(value);
+  if (lastPushed.get(channel) === json) return;
+  lastPushed.set(channel, json);
+  push();
+}
+
+/** Send the sidebar the Thread rows that changed in `workspaceId` (every
+ *  workspace when omitted). Coalesced: a burst of triggers — a session
+ *  tagged, then its Turn ending — costs one listing per workspace. */
+function pushSessionChanges(workspaceId?: string) {
+  const scheduled = pendingSessionWs !== null;
+  if (!workspaceId) pendingSessionWs = "all";
+  else if (pendingSessionWs !== "all") {
+    pendingSessionWs ??= new Set();
+    pendingSessionWs.add(workspaceId);
+  }
+  if (!scheduled)
+    setTimeout(() => void serialSessionWork(flushSessionChanges), 50);
+}
+
+/** Row listing + diffing runs one job at a time: two overlapping listings
+ *  could otherwise finish out of order and record older rows as sent. */
+let sessionWork: Promise<unknown> = Promise.resolve();
+function serialSessionWork<T>(job: () => Promise<T>): Promise<T> {
+  const run = sessionWork.then(job, job);
+  sessionWork = run.catch(() => {});
+  return run;
+}
+
+async function flushSessionChanges() {
+  const pending = pendingSessionWs;
+  pendingSessionWs = null;
+  const targets = workspaces
+    .list()
+    .filter((ws) => pending === "all" || !pending || pending.has(ws.id));
+  const changes: SessionChanges[] = [];
+  for (const ws of targets) {
+    try {
+      const change = sessionChanges.diff(ws.id, await listThreads(ws));
+      if (change) changes.push(change);
+    } catch {
+      // a workspace folder that vanished — its rows stay until a snapshot
+    }
+  }
+  if (changes.length) send()?.sessionsChanged({ changes });
 }
 
 /** Kick off a hidden ingest run. Defaults to the active workspace (drag-drop,
@@ -1961,6 +2057,41 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         );
         return { byWorkspace };
       },
+      getSidebarSnapshot: async () => {
+        const list = workspaces.list();
+        const byWorkspace: Record<string, SessionSummary[]> = {};
+        await serialSessionWork(() =>
+          Promise.all(
+            list.map(async (ws) => {
+              byWorkspace[ws.id] = await listThreads(ws);
+              sessionChanges.reset(ws.id, byWorkspace[ws.id]);
+            }),
+          ),
+        );
+        const inbox = workspaces.listInbox();
+        const outbox = workspaces.listOutbox();
+        const skills = workspaces.listSkills();
+        const knowledgePaths = workspaces
+          .listKnowledge()
+          .docs.map((d) => d.path);
+        // What the webview now holds — later pushes diff against it.
+        lastPushed.set("inbox", JSON.stringify(inbox));
+        lastPushed.set("outbox", JSON.stringify(outbox));
+        lastPushed.set("skills", JSON.stringify(skills));
+        lastPushed.set("knowledge", JSON.stringify(knowledgePaths));
+        return {
+          byWorkspace,
+          workspaces: list,
+          inbox,
+          outbox,
+          skills,
+          knowledgePaths,
+          review: workspaces.listReview(),
+          health: lastHealth,
+          ingest: ingestStatus(),
+          background: backgroundRunInfo(),
+        };
+      },
       getSessionHistory: async ({ sessionId }) => {
         foreground.threadOpened();
         const cwd = activeWs().path;
@@ -1969,18 +2100,20 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         return sessions.history(cwd, sessionId);
       },
       renameSession: async ({ sessionId, title }) => {
-        const cwd = activeWs().path;
-        if (codexThreads.has(cwd, sessionId)) {
-          return { ok: codexThreads.rename(cwd, sessionId, title) };
-        }
-        return { ok: await sessions.rename(cwd, sessionId, title) };
+        const ws = activeWs();
+        const ok = codexThreads.has(ws.path, sessionId)
+          ? codexThreads.rename(ws.path, sessionId, title)
+          : await sessions.rename(ws.path, sessionId, title);
+        if (ok) pushSessionChanges(ws.id);
+        return { ok };
       },
       deleteSession: async ({ sessionId }) => {
-        const cwd = activeWs().path;
-        if (codexThreads.has(cwd, sessionId)) {
-          return { ok: codexThreads.remove(cwd, sessionId) };
-        }
-        return { ok: await sessions.remove(cwd, sessionId) };
+        const ws = activeWs();
+        const ok = codexThreads.has(ws.path, sessionId)
+          ? codexThreads.remove(ws.path, sessionId)
+          : await sessions.remove(ws.path, sessionId);
+        if (ok) pushSessionChanges(ws.id);
+        return { ok };
       },
 
       listSkills: () => ({ skills: workspaces.listSkills() }),
@@ -2049,6 +2182,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         drive.disconnect(id); // clear tokens for unregistered workspaces
         void wsEnv.deleteAll(id); // and Settings-entered credentials
         const ok = workspaces.remove(id);
+        sessionChanges.forget(id);
         pushWorkspaces();
         return { ok };
       },
@@ -2157,6 +2291,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
               kind: "capture",
               detail: `skill pack import → ${res.added.join(", ")}`,
             });
+            pushSkills();
           }
           return res;
         } catch (e) {
@@ -2631,6 +2766,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         try {
           workspaces.resolveReview(relPath, action);
           send()?.reviewChanged({ items: workspaces.listReview() });
+          pushKnowledge(); // a rejected doc leaves knowledge/
           return { ok: true };
         } catch (e) {
           return { ok: false, error: String((e as Error).message ?? e) };
@@ -2694,7 +2830,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
             path.join(outbox, name),
             `To: ${safeTo}\n${safeCc ? `Cc: ${safeCc}\n` : ""}Subject: ${subject}\n\n${body}\n`,
           );
-          send()?.outboxChanged({ files: workspaces.listOutbox() });
+          pushOutbox();
           return { outboxFile: name };
         } catch (e) {
           return { error: String((e as Error).message ?? e) };
@@ -2737,7 +2873,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
       },
       archiveOutbox: ({ name }) => {
         workspaces.archiveOutbox(name);
-        send()?.outboxChanged({ files: workspaces.listOutbox() });
+        pushOutbox();
         return { ok: true };
       },
       revealOutbox: () => {

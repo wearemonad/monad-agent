@@ -931,7 +931,6 @@ function SkillsSection() {
     setResult("");
     const res = await api.deleteSkill(active.id, name);
     setResult(res.error ?? `Deleted "${name}" — the folder is in the Trash.`);
-    await api.refreshSidebar();
   };
 
   const doExport = async () => {
@@ -955,7 +954,6 @@ function SkillsSection() {
             : ""),
       );
       setSource("");
-      await api.refreshSidebar();
     } finally {
       setImporting(false);
     }

@@ -62,6 +62,18 @@ const INITIAL_THREADS_SHOWN = 12;
 /** Briefings accumulate one per weekday — show the latest few. */
 const INITIAL_BRIEFINGS_SHOWN = 3;
 
+/** The working cue for a sidebar row: one still frame of the thinking orb
+ *  (drawn once — no per-frame canvas work for every working Thread), with a
+ *  gentle CSS pulse that only touches transform and opacity, so it runs on
+ *  the compositor. The live canvas orb stays in the open Thread's cue. */
+function SidebarOrb() {
+  return (
+    <span className="orb-pulse flex" aria-hidden>
+      <ThinkingOrb state="working" size={20} paused aria-hidden />
+    </span>
+  );
+}
+
 export function Sidebar({
   contentHidden,
   frozenWidth,
@@ -516,7 +528,7 @@ function ThreadSection({
         )}
         {!expanded && status.working ? (
           <span className="flex items-center" title="Working…">
-            <ThinkingOrb state="working" size={20} aria-hidden />
+            <SidebarOrb />
           </span>
         ) : (
           !expanded &&
@@ -730,7 +742,7 @@ function ThreadRow({
             className="relative shrink-0 self-center mr-1.5"
             title="Working…"
           >
-            <ThinkingOrb state="working" size={20} aria-hidden />
+            <SidebarOrb />
           </span>
         ) : unread ? (
           <span
