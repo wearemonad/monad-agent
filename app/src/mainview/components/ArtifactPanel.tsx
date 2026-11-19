@@ -20,7 +20,7 @@ import type { WebviewTagElement } from "electrobun/view";
 import type { ArtifactType } from "../../shared/ipc";
 import { buildArtifactShell } from "../artifactShell";
 import { useResolvedScheme, useThemeId } from "../lib/theme";
-import { useStore } from "../store";
+import { useActiveThread, useStore } from "../store";
 import { api } from "../rpc";
 import { safeMarkdownComponents } from "./safeMarkdown";
 
@@ -137,9 +137,9 @@ function SandboxFrame({ html, hidden }: { html: string; hidden: boolean }) {
 }
 
 export function ArtifactPanel() {
-  const open = useStore((s) => s.artifactPanelOpen);
-  const active = useStore((s) => s.activeArtifact);
-  const artifacts = useStore((s) => s.artifacts);
+  const open = useActiveThread((t) => t.artifactPanelOpen);
+  const active = useActiveThread((t) => t.activeArtifact);
+  const artifacts = useActiveThread((t) => t.artifacts);
   // Native webviews composite OVER the DOM — hide the preview while a modal
   // is open so it can't paint on top of the dialog.
   const settingsOpen = useStore((s) => s.settingsOpen);

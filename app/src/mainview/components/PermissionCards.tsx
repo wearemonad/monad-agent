@@ -23,12 +23,12 @@ function isSensitiveTool(toolName: string): boolean {
 export function PermissionCards() {
   const allRequests = useStore((s) => s.permissionQueue);
   const runThreads = useStore((s) => s.runThreads);
-  const activeThreadKey = useStore((s) => s.activeThreadKey);
+  const activeThreadId = useStore((s) => s.activeThreadId);
   // Only THIS thread's requests render here — a parallel thread's cards wait
   // in its own transcript (the sidebar badges the thread as needing input).
   const queue = useMemo(
-    () => allRequests.filter((r) => runThreads[r.runId] === activeThreadKey),
-    [allRequests, runThreads, activeThreadKey],
+    () => allRequests.filter((r) => runThreads[r.runId] === activeThreadId),
+    [allRequests, runThreads, activeThreadId],
   );
   const first = queue[0];
 

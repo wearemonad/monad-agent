@@ -1,9 +1,9 @@
 import type { AgentStreamEvent } from "../../shared/ipc";
 
 /** Where a fake run's output goes. In the app this is AgentService's own
- *  delta buffer and emitter, so everything downstream of the CLI — delta
- *  coalescing, routeAgentEvent, the streamEvent RPC, the webview store — is
- *  the real path. */
+ *  emitter, so everything downstream of the CLI — routeAgentEvent, the
+ *  StreamMultiplexer, the streamBatch RPC, the webview store — is the real
+ *  path. */
 export type FakeSink = {
   delta: (kind: "text" | "thinking", text: string) => void;
   emit: (event: AgentStreamEvent) => void;

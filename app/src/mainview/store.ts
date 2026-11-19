@@ -63,13 +63,12 @@ function loadRunOptions(): Record<string, RunOptions> {
 
 export type { ArtifactState } from "../shared/artifacts";
 
-/** Everything that belongs to ONE conversation thread. The active thread's
- *  snapshot is spread across the store's top-level fields (so components keep
- *  their simple selectors); switching threads stashes the current snapshot
- *  into `threads` and restores (or builds) the next one. A thread with a run
- *  still streaming keeps receiving events in its stashed snapshot — parallel
- *  threads are the point of this shape. */
-export type ThreadSnapshot = {
+/** Everything that belongs to ONE conversation Thread. Every Thread —
+ *  visible or not — lives in `threads[id]`; the one on screen is just
+ *  `activeThreadId`, so switching Threads changes one value. Streaming text
+ *  has its own fields, so `items` (the structure) keeps its identity while
+ *  deltas arrive. */
+export type ThreadState = {
   items: ChatItem[];
   streamingText: string;
   streamingThinking: string;
@@ -85,6 +84,16 @@ export type ThreadSnapshot = {
   artifacts: Record<string, ArtifactState>;
   activeArtifact: { id: string; version: number } | null;
   artifactPanelOpen: boolean;
+  /** History is in (or the Thread is new). False while it loads: the chat
+   *  shows a skeleton, and stream events wait in `pending`. */
+  loaded: boolean;
+  /** Stream events that arrived before the history, replayed on top of it. */
+  pending: AgentStreamEvent[];
+  /** A stream batch went missing while this Thread's run streamed: its
+   *  transcript is reloaded from disk once the run ends. */
+  stale: boolean;
+  /** Transcript scroll position to restore on reopen (PR 5). */
+  scrollOffset: number | null;
 };
 
 /** Client-side unique id (thread keys, run ids). crypto.randomUUID needs a
@@ -93,18 +102,29 @@ export function uid(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** Stashed idle threads reload from disk when reopened, so keep only a few
- *  around (running ones always stay — they hold live state disk doesn't). */
-const IDLE_STASH_MAX = 8;
+/** Idle, loaded Threads kept in memory besides the active one and any with
+ *  a run in flight. An evicted Thread just loads again on the next open. */
+const IDLE_THREADS_MAX = 20;
 
-function emptyThread(window: number | null): ThreadSnapshot {
+/** When each Thread was last on screen (a counter, not a clock) — only
+ *  eviction reads it, so it stays out of the store: a switch then changes
+ *  nothing but activeThreadId. */
+const lastUsed = new Map<string, number>();
+let useClock = 0;
+const touch = (id: string) => void lastUsed.set(id, ++useClock);
+
+function emptyThread(
+  window: number | null,
+  resumeSessionId: string | null = null,
+  loaded = true,
+): ThreadState {
   return {
     items: [],
     streamingText: "",
     streamingThinking: "",
     runState: "idle",
     activeRunId: null,
-    resumeSessionId: null,
+    resumeSessionId,
     // Window size survives — same model until the user changes it.
     contextUsage: { tokens: 0, processed: 0, window },
     statusLine: "",
@@ -113,15 +133,41 @@ function emptyThread(window: number | null): ThreadSnapshot {
     artifacts: {},
     activeArtifact: null,
     artifactPanelOpen: false,
+    loaded,
+    pending: [],
+    stale: false,
+    scrollOffset: null,
   };
 }
 
-type MonadState = ThreadSnapshot & {
-  /** Key of the thread currently on screen (its snapshot lives at top level). */
-  activeThreadKey: string;
-  /** Snapshots of every NON-active thread that must survive a switch: those
-   *  with a run streaming, plus a bounded set of recently-left idle ones. */
-  threads: Record<string, ThreadSnapshot>;
+/** The Thread on screen. Always present: every action that changes
+ *  `activeThreadId` puts a Thread there. */
+export function activeThread(s: {
+  threads: Record<string, ThreadState>;
+  activeThreadId: string;
+}): ThreadState {
+  return s.threads[s.activeThreadId];
+}
+
+/** Read the visible Thread: `useActiveThread((t) => t.items)`. */
+export function useActiveThread<T>(selector: (t: ThreadState) => T): T {
+  return useStore((s) => selector(activeThread(s)));
+}
+
+/** Read any Thread by id (undefined once it's evicted or deleted). */
+export function useThread<T>(
+  id: string,
+  selector: (t: ThreadState | undefined) => T,
+): T {
+  return useStore((s) => selector(s.threads[id]));
+}
+
+type MonadState = {
+  /** Id of the Thread on screen (a key of `threads`). */
+  activeThreadId: string;
+  /** Every Thread in memory: the active one, any with a run in flight, and
+   *  up to IDLE_THREADS_MAX recently used idle ones. */
+  threads: Record<string, ThreadState>;
   /** runId → thread key: routes every stream event to the thread that
    *  started the run, wherever the user is looking now. */
   runThreads: Record<string, string>;
@@ -206,11 +252,18 @@ type MonadState = ThreadSnapshot & {
    *  so the panel knows to re-fetch its drafts list. */
   gmailDraftsBump: number;
 
+  /** Append an item to the visible Thread's transcript. */
   push: (item: ChatItem) => void;
   applyEvent: (e: AgentStreamEvent) => void;
-  /** Apply a batch of stream events (one animation frame's worth) in a
-   *  single store update. */
-  applyEvents: (batch: AgentStreamEvent[]) => void;
+  /** Apply a batch of stream events (one streamBatch) to whichever Threads
+   *  they belong to, in a single store update. Returns the sessions whose
+   *  Thread missed a batch and whose run just ended — reload them. */
+  applyEvents: (batch: AgentStreamEvent[]) => string[];
+  /** A stream batch went missing: every Thread with a run in flight may be
+   *  short of events, so each reloads from disk when its run ends. */
+  markStreamsStale: () => void;
+  /** Forget a Thread's transcript so the next open reloads it from disk. */
+  invalidateThread: (sessionId: string) => void;
   /** Bind a freshly minted runId to the active thread, BEFORE the startRun
    *  RPC goes out — stream events may beat the response back. */
   registerRun: (runId: string) => void;
@@ -224,15 +277,23 @@ type MonadState = ThreadSnapshot & {
   enqueuePermission: (req: PermissionRequest) => void;
   removePermission: (requestId: string) => void;
   newChat: () => void;
-  /** Open a Thread that's already in memory (streaming in the background or
-   *  recently left) straight from its snapshot — no history fetch. False when
-   *  it isn't in memory. */
+  /** Show a Thread that's already in memory (loaded or loading) — no RPC,
+   *  no copying: only activeThreadId changes. False when it isn't in memory. */
   switchToThread: (sessionId: string) => boolean;
+  /** Show a Thread that isn't in memory yet, straight away and unloaded
+   *  (skeleton) — its history is fetched by the caller (openHistory). */
+  startThreadLoad: (sessionId: string) => void;
+  /** Store a Thread's history under it (shown only if it's still the one on
+   *  screen); events that arrived meanwhile replay on top. A Thread not in
+   *  memory at all is created and shown. */
   openHistory: (
     sessionId: string,
     items: ChatItem[],
     contextTokens?: number,
   ) => void;
+  /** The history fetch failed: drop the unloaded Thread (a fresh one takes
+   *  its place if it was on screen). */
+  abandonThreadLoad: (sessionId: string) => void;
   setSessions: (s: SessionSummary[]) => void;
   setAllSessions: (s: Record<string, SessionSummary[]>) => void;
   /** Targeted sidebar update pushed by bun: only the Thread rows that
@@ -318,57 +379,85 @@ export function applyRowChanges(
   );
 }
 
+/** The store's starting point: one fresh Thread, on screen. */
+function initialThreads(): Pick<MonadState, "threads" | "activeThreadId"> {
+  const id = uid();
+  return { activeThreadId: id, threads: { [id]: emptyThread(null) } };
+}
+
 /** Set by rpc.ts at init (kept out of state to avoid a circular import):
  *  opening a thread — fresh or resumed — boots its agent session early so the
  *  first message skips the CLI cold start. */
 let prewarmHandler: (resumeSessionId: string | null) => void = () => {};
 
-/** The active thread's snapshot, lifted back out of the top-level fields. */
-function snapshotOf(s: MonadState): ThreadSnapshot {
-  return {
-    items: s.items,
-    streamingText: s.streamingText,
-    streamingThinking: s.streamingThinking,
-    runState: s.runState,
-    activeRunId: s.activeRunId,
-    resumeSessionId: s.resumeSessionId,
-    contextUsage: s.contextUsage,
-    statusLine: s.statusLine,
-    runModel: s.runModel,
-    composerDraft: s.composerDraft,
-    artifacts: s.artifacts,
-    activeArtifact: s.activeArtifact,
-    artifactPanelOpen: s.artifactPanelOpen,
-  };
+function threadIdFor(
+  s: Pick<MonadState, "threads">,
+  sessionId: string,
+): string | undefined {
+  return Object.entries(s.threads).find(
+    ([, t]) => t.resumeSessionId === sessionId,
+  )?.[0];
 }
 
-/** The `threads` map after leaving the active thread: a running thread is
- *  stashed (its live state exists nowhere else); an idle one is dropped —
- *  reopening it reloads from disk, same as before parallel threads existed.
- *  Idle leftovers (runs that finished while stashed) are capped, oldest-ish
- *  first; `protect` (the snapshot about to be restored) is never dropped. */
-function stashThreads(
-  s: MonadState,
-  protect?: string,
-): Record<string, ThreadSnapshot> {
-  const threads = { ...s.threads };
-  const idle = Object.keys(threads).filter(
-    (k) => k !== protect && threads[k].runState !== "running",
-  );
-  for (const k of idle.slice(0, Math.max(0, idle.length - IDLE_STASH_MAX))) {
-    delete threads[k];
+/** `threads` with the memory bound applied: Threads no one can reopen
+ *  (never got a session, no run) go, then the least recently used idle
+ *  loaded ones beyond IDLE_THREADS_MAX. The active Thread, Threads with a
+ *  run in flight and Threads still loading stay. Same object back when
+ *  nothing goes. */
+function settleThreads(
+  threads: Record<string, ThreadState>,
+  activeId: string,
+): Record<string, ThreadState> {
+  const drop: string[] = [];
+  const idle: string[] = [];
+  for (const [id, t] of Object.entries(threads)) {
+    if (id === activeId || t.runState === "running" || !t.loaded) continue;
+    if (!t.resumeSessionId) drop.push(id);
+    else idle.push(id);
   }
-  if (s.runState === "running") threads[s.activeThreadKey] = snapshotOf(s);
-  return threads;
+  idle.sort((a, b) => (lastUsed.get(a) ?? 0) - (lastUsed.get(b) ?? 0));
+  drop.push(...idle.slice(0, Math.max(0, idle.length - IDLE_THREADS_MAX)));
+  if (!drop.length) return threads;
+  const out = { ...threads };
+  for (const id of drop) {
+    delete out[id];
+    lastUsed.delete(id);
+  }
+  return out;
 }
+
+/** Make `id` the Thread on screen. */
+function activate(
+  s: MonadState,
+  id: string,
+  threads: Record<string, ThreadState> = s.threads,
+): Pick<MonadState, "threads" | "activeThreadId"> {
+  touch(s.activeThreadId); // in use until now
+  touch(id);
+  return { activeThreadId: id, threads: settleThreads(threads, id) };
+}
+
+/** Patch the visible Thread. */
+function patchActive(
+  s: MonadState,
+  patch: Partial<ThreadState>,
+): Pick<MonadState, "threads"> {
+  const t = activeThread(s);
+  return { threads: { ...s.threads, [s.activeThreadId]: { ...t, ...patch } } };
+}
+
+/** The context window to carry into a new Thread (same model until the user
+ *  changes it). */
+const carriedWindow = (s: MonadState) =>
+  activeThread(s)?.contextUsage.window ?? null;
 
 /** Pure per-thread event reducer — the same transitions whether the thread is
  *  on screen (top-level state) or stashed in `threads`. Cross-thread effects
  *  (permission queue, running-session bookkeeping) live in applyEvent. */
 function reduceThread(
-  t: ThreadSnapshot,
+  t: ThreadState,
   e: AgentStreamEvent,
-): Partial<ThreadSnapshot> {
+): Partial<ThreadState> {
   switch (e.kind) {
     case "run-started":
       // adopt the session id immediately so the thread highlights in the
@@ -488,26 +577,28 @@ function reduceThread(
   }
 }
 
-/** One stream event's effect on the store: its thread's transitions (routed
- *  by runId to the visible or a stashed thread) plus the cross-thread
- *  bookkeeping. Null when the event has nowhere to land. */
+/** One stream event's effect on the store: its Thread's transitions (routed
+ *  by runId, visible or not) plus the cross-thread bookkeeping. Null when
+ *  the event has nowhere to land. `resync` names a stale Thread's session
+ *  whose run just ended. */
 function stepEvent(
   s: MonadState,
   e: AgentStreamEvent,
-): Partial<MonadState> | null {
-  const runId = "runId" in e ? e.runId : "";
+): { patch: Partial<MonadState>; resync?: string } | null {
+  const runId = e.runId;
   // Route by the run's own thread. Unknown runId = a run this UI never
   // started or one already finished — its stragglers have nowhere to land.
   const key = runId ? s.runThreads[runId] : undefined;
   if (!key) return null;
   const global: Partial<MonadState> = {};
+  const ended = e.kind === "run-finished" || e.kind === "run-error";
   if (e.kind === "run-started" && e.sessionId) {
     global.runningSessions = {
       ...s.runningSessions,
       [e.sessionId]: e.runId,
     };
   }
-  if (e.kind === "run-finished" || e.kind === "run-error") {
+  if (ended) {
     // A run that ended can no longer be answered — drop its stale cards,
     // its sidebar spinner, and (last event by contract) its routing entry.
     global.permissionQueue = s.permissionQueue.filter((r) => r.runId !== runId);
@@ -532,29 +623,31 @@ function stepEvent(
     if (
       endedSessionId &&
       !aborted &&
-      key !== s.activeThreadKey &&
+      key !== s.activeThreadId &&
       !s.unreadSessions.includes(endedSessionId)
     ) {
       global.unreadSessions = [...s.unreadSessions, endedSessionId];
       saveUnread(global.unreadSessions);
     }
   }
-  if (key === s.activeThreadKey) {
-    return { ...global, ...reduceThread(snapshotOf(s), e) };
-  }
   const t = s.threads[key];
-  return t
-    ? {
-        ...global,
-        threads: { ...s.threads, [key]: { ...t, ...reduceThread(t, e) } },
-      }
-    : global;
+  if (!t) return { patch: global };
+  // Still loading: the event waits for the history (replayed on top of it).
+  const next: ThreadState = t.loaded
+    ? { ...t, ...reduceThread(t, e) }
+    : { ...t, pending: [...t.pending, e] };
+  const resync =
+    ended && t.stale && t.loaded
+      ? (next.resumeSessionId ?? undefined)
+      : undefined;
+  return {
+    patch: { ...global, threads: { ...s.threads, [key]: next } },
+    resync,
+  };
 }
 
 export const useStore = create<MonadState>((set, get) => ({
-  ...emptyThread(null),
-  activeThreadKey: uid(),
-  threads: {},
+  ...initialThreads(),
   runThreads: {},
   runningSessions: {},
   permissionQueue: [],
@@ -594,7 +687,8 @@ export const useStore = create<MonadState>((set, get) => ({
   sidebarCollapsed: localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1",
   gmailDraftsBump: 0,
 
-  push: (item) => set((s) => ({ items: [...s.items, item] })),
+  push: (item) =>
+    set((s) => patchActive(s, { items: [...activeThread(s).items, item] })),
 
   setPrewarmHandler: (fn) => {
     prewarmHandler = fn;
@@ -602,24 +696,51 @@ export const useStore = create<MonadState>((set, get) => ({
 
   registerRun: (runId) =>
     set((s) => ({
-      runThreads: { ...s.runThreads, [runId]: s.activeThreadKey },
+      runThreads: { ...s.runThreads, [runId]: s.activeThreadId },
     })),
 
-  applyEvent: (e) => get().applyEvents([e]),
+  applyEvent: (e) => void get().applyEvents([e]),
 
   applyEvents: (batch) => {
     // One set() for the whole batch: each event's patch lands on a working
     // copy the next event reads from, and subscribers hear about it once.
     const work = { ...get() };
     const patch: Partial<MonadState> = {};
+    const resync: string[] = [];
     for (const e of batch) {
-      const p = stepEvent(work, e);
-      if (!p) continue;
-      Object.assign(work, p);
-      Object.assign(patch, p);
+      const step = stepEvent(work, e);
+      if (!step) continue;
+      Object.assign(work, step.patch);
+      Object.assign(patch, step.patch);
+      if (step.resync) resync.push(step.resync);
     }
     if (Object.keys(patch).length) set(patch);
+    return resync;
   },
+
+  markStreamsStale: () =>
+    set((s) => {
+      const threads = { ...s.threads };
+      for (const [id, t] of Object.entries(threads))
+        if (t.runState === "running") threads[id] = { ...t, stale: true };
+      return { threads };
+    }),
+
+  invalidateThread: (sessionId) =>
+    set((s) => {
+      const id = threadIdFor(s, sessionId);
+      if (!id) return {};
+      const t = s.threads[id];
+      return {
+        threads: {
+          ...s.threads,
+          [id]: {
+            ...emptyThread(t.contextUsage.window, sessionId, false),
+            composerDraft: t.composerDraft,
+          },
+        },
+      };
+    }),
 
   applyDriveEvent: (e) =>
     set((s) => ({ driveStatus: { ...s.driveStatus, [e.workspaceId]: e } })),
@@ -634,12 +755,14 @@ export const useStore = create<MonadState>((set, get) => ({
     })),
 
   newChat: () => {
-    // Leaving a running thread no longer aborts it — the run keeps streaming
-    // into its stashed snapshot, and the sidebar spinner tracks it.
+    // Leaving a running thread doesn't abort it — the run keeps streaming
+    // into its own Thread, and the sidebar spinner tracks it.
+    const id = uid();
     set((s) => ({
-      threads: stashThreads(s),
-      activeThreadKey: uid(),
-      ...emptyThread(s.contextUsage.window),
+      ...activate(s, id, {
+        ...s.threads,
+        [id]: emptyThread(carriedWindow(s)),
+      }),
       highlightTerm: null,
     }));
     prewarmHandler(null);
@@ -654,62 +777,83 @@ export const useStore = create<MonadState>((set, get) => ({
     }),
 
   switchToThread: (sessionId) => {
-    const s = get();
-    const found = Object.entries(s.threads).find(
-      ([, t]) => t.resumeSessionId === sessionId,
-    );
-    if (!found) return false;
+    const id = threadIdFor(get(), sessionId);
+    if (!id) return false;
     get().markRead(sessionId);
-    const [key, snap] = found;
-    set((s) => {
-      const threads = stashThreads(s, key);
-      delete threads[key];
-      return { threads, activeThreadKey: key, ...snap };
-    });
+    set((s) => activate(s, id));
     // A running thread already has its live session — prewarming would boot
     // a pointless second process next to it.
-    if (snap.runState !== "running") prewarmHandler(sessionId);
+    const t = get().threads[id];
+    if (t.runState !== "running") prewarmHandler(sessionId);
     return true;
   },
 
-  openHistory: (sessionId, items, contextTokens) => {
-    // The thread came into memory while its history loaded (a run started
-    // there): the live snapshot wins over what was read from disk.
+  startThreadLoad: (sessionId) => {
     if (get().switchToThread(sessionId)) return;
     get().markRead(sessionId);
+    const id = uid();
+    set((s) => ({
+      ...activate(s, id, {
+        ...s.threads,
+        [id]: emptyThread(carriedWindow(s), sessionId, false),
+      }),
+    }));
+    // Boot the agent session while the history loads.
+    prewarmHandler(sessionId);
+  },
+
+  openHistory: (sessionId, items, contextTokens) => {
+    const known = threadIdFor(get(), sessionId);
+    if (!known) {
+      // Not in memory at all: create it, already loaded, and show it.
+      get().startThreadLoad(sessionId);
+    }
     set((s) => {
-      return {
-        threads: stashThreads(s),
-        activeThreadKey: uid(),
-        items,
-        streamingText: "",
-        streamingThinking: "",
-        // Switching threads drops the half-typed message; re-opening the same
-        // thread keeps it.
-        composerDraft: sessionId === s.resumeSessionId ? s.composerDraft : "",
-        resumeSessionId: sessionId,
+      const id = threadIdFor(s, sessionId);
+      if (!id) return {};
+      const t = s.threads[id];
+      // Loaded meanwhile (or already): the live Thread wins over disk.
+      if (t.loaded) return {};
+      // History first, then anything added while it loaded (the user's own
+      // message), then the stream events that waited for it.
+      let next: ThreadState = {
+        ...t,
+        items: [...items, ...t.items],
         // Resume the meter from the thread's persisted usage; the next run's
-        // own usage events take over from there. Threads without usage (or an
-        // older bun process not sending it) fall back to 0 as before.
+        // own usage events take over from there.
         contextUsage: {
           tokens: contextTokens ?? 0,
           processed: contextTokens ?? 0,
-          window: s.contextUsage.window,
+          window: t.contextUsage.window,
         },
-        runState: "idle",
-        activeRunId: null,
-        statusLine: "",
-        runModel: null,
         artifacts: deriveArtifacts(items),
-        activeArtifact: null,
-        artifactPanelOpen: false,
+        loaded: true,
+        pending: [],
       };
+      for (const e of t.pending) next = { ...next, ...reduceThread(next, e) };
+      return { threads: { ...s.threads, [id]: next } };
     });
-    prewarmHandler(sessionId);
+  },
+
+  abandonThreadLoad: (sessionId) => {
+    const id = threadIdFor(get(), sessionId);
+    if (!id || get().threads[id].loaded) return;
+    const dropped = get().threads[id];
+    if (get().activeThreadId === id) {
+      get().newChat();
+      // Keep what was shown on the skeleton's Thread (request()'s error).
+      set((s) => patchActive(s, { items: dropped.items }));
+    }
+    set((s) => {
+      const threads = { ...s.threads };
+      delete threads[id];
+      return { threads };
+    });
   },
 
   dropThreadForSession: (sessionId) => {
     get().markRead(sessionId); // a deleted thread keeps no dot
+    if (activeThread(get()).resumeSessionId === sessionId) get().newChat();
     set((s) => {
       const threads = { ...s.threads };
       for (const [k, t] of Object.entries(threads)) {
@@ -717,23 +861,23 @@ export const useStore = create<MonadState>((set, get) => ({
       }
       return { threads };
     });
-    if (get().resumeSessionId === sessionId) get().newChat();
   },
 
   openArtifact: (id, version) =>
     set((s) => {
-      const art = s.artifacts[id];
+      const art = activeThread(s).artifacts[id];
       if (!art) return {};
       const last = art.versions.length - 1;
-      return {
+      return patchActive(s, {
         activeArtifact: {
           id,
           version: Math.max(0, Math.min(version ?? last, last)),
         },
         artifactPanelOpen: true,
-      };
+      });
     }),
-  closeArtifactPanel: () => set({ artifactPanelOpen: false }),
+  closeArtifactPanel: () =>
+    set((s) => patchActive(s, { artifactPanelOpen: false })),
   setSidebarCollapsed: (sidebarCollapsed) => {
     if (get().sidebarCollapsed === sidebarCollapsed) return;
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? "1" : "0");
@@ -806,7 +950,8 @@ export const useStore = create<MonadState>((set, get) => ({
     else localStorage.removeItem("monad-model-provider");
     set({ model, modelProvider: provider });
   },
-  setComposerDraft: (composerDraft) => set({ composerDraft }),
+  setComposerDraft: (composerDraft) =>
+    set((s) => patchActive(s, { composerDraft })),
   setSkills: (skills) =>
     set((s) => ({ skills: keepListIfEqual(s.skills, skills, (k) => k.name) })),
   togglePin: (sessionId) =>
@@ -832,7 +977,8 @@ export const useStore = create<MonadState>((set, get) => ({
     set((s) => ({
       workspaces: keepListIfEqual(s.workspaces, workspaces, (w) => w.id),
     })),
-  setRun: (runState, activeRunId = null) => set({ runState, activeRunId }),
+  setRun: (runState, activeRunId = null) =>
+    set((s) => patchActive(s, { runState, activeRunId })),
   // Leaving settings or the section drops the New workspace dialog, so it
   // doesn't pop back open on the next visit.
   setSettingsOpen: (settingsOpen) =>
@@ -863,7 +1009,7 @@ export const useStore = create<MonadState>((set, get) => ({
         prev?.runId !== run?.runId ? prev?.sessionId : undefined;
       if (
         !endedSessionId ||
-        endedSessionId === s.resumeSessionId ||
+        endedSessionId === activeThread(s).resumeSessionId ||
         s.unreadSessions.includes(endedSessionId)
       ) {
         return { backgroundRun: run };

@@ -33,7 +33,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ThinkingOrb, type OrbState } from "thinking-orbs";
 import type { ChatItem, SkillInfo } from "../../shared/ipc";
-import { useStore } from "../store";
+import { useActiveThread, useStore } from "../store";
 import { api } from "../rpc";
 import { perf } from "../lib/perf";
 import { useSmoothText } from "../lib/smoothText";
@@ -139,8 +139,8 @@ function BackgroundActivityChip() {
 function TopBar() {
   const workspaces = useStore((s) => s.workspaces);
   const sessions = useStore((s) => s.sessions);
-  const resumeSessionId = useStore((s) => s.resumeSessionId);
-  const items = useStore((s) => s.items);
+  const resumeSessionId = useActiveThread((t) => t.resumeSessionId);
+  const items = useActiveThread((t) => t.items);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   const active = workspaces.find((w) => w.active);
   // Keyed by session so the strip drops away by itself when the open thread
@@ -654,21 +654,44 @@ function LiveCueChip({ items }: { items: ChatItem[] }) {
   );
 }
 
+/** Placeholder rows while a Thread's history loads — the click paints at
+ *  once instead of waiting for the history RPC. */
+function TranscriptSkeleton() {
+  return (
+    <div
+      className="mx-auto w-full px-6 max-w-3xl space-y-5 pt-2"
+      role="status"
+      aria-label="Loading thread"
+    >
+      {[60, 90, 75, 40].map((w, i) => (
+        <div
+          key={w}
+          className={cn(
+            "h-4 rounded-md bg-muted animate-pulse motion-reduce:animate-none",
+            i % 2 === 0 && "ml-auto",
+          )}
+          style={{ width: `${w}%` }}
+        />
+      ))}
+    </div>
+  );
+}
+
 function Messages() {
-  const items = useStore((s) => s.items);
-  const streamingText = useStore((s) => s.streamingText);
-  const streamingThinking = useStore((s) => s.streamingThinking);
+  const items = useActiveThread((t) => t.items);
+  const streamingText = useActiveThread((t) => t.streamingText);
+  const streamingThinking = useActiveThread((t) => t.streamingThinking);
   // Typewriter smoothing: reveal the streamed buffer progressively instead of
   // snapping each coalesced chunk in. (Thinking stays unsmoothed — its
   // sliding-window ticker isn't append-only, so a reveal cursor can't track it.)
   const displayedText = useSmoothText(streamingText);
-  const runState = useStore((s) => s.runState);
+  const runState = useActiveThread((t) => t.runState);
   // Only this thread's pending cards count — a parallel thread's permission
   // wait must not hide the "Thinking…" cue here.
   const permissionCount = useStore(
     (s) =>
       s.permissionQueue.filter(
-        (r) => s.runThreads[r.runId] === s.activeThreadKey,
+        (r) => s.runThreads[r.runId] === s.activeThreadId,
       ).length,
   );
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -688,17 +711,20 @@ function Messages() {
   const [pinned, setPinned] = useState(true);
 
   // Thread switch (open from the sidebar, new chat, restoring a stashed run):
-  // jump straight to the end of the new transcript. activeThreadKey changes
+  // jump straight to the end of the new transcript. activeThreadId changes
   // in the same store update that swaps `items` in, so this layout effect
   // runs after that transcript is in the DOM and before it paints — no flash
   // of the thread's top, no smooth-scroll animation. Re-pins too, so a
   // scrolled-up position on the previous thread can't suppress the jump.
-  const activeThreadKey = useStore((s) => s.activeThreadKey);
+  const activeThreadId = useStore((s) => s.activeThreadId);
+  // A Thread opened from disk shows a skeleton until its history is in; the
+  // jump to the end runs again when it arrives.
+  const loaded = useActiveThread((t) => t.loaded);
   // Deadline (performance.now() ms) until which transcript growth re-pins the
   // end after a switch — images, markdown and mermaid settle their height
   // after first paint and would otherwise leave the view short of the end.
   const repinUntilRef = useRef(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: activeThreadKey is the trigger — the effect must re-run on every thread switch, not on the values it reads.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeThreadId and loaded are the triggers — the effect must re-run on every thread switch (and once its history lands), not on the values it reads.
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -706,7 +732,7 @@ function Messages() {
     setPinned(true);
     repinUntilRef.current = performance.now() + 1000;
     el.scrollTop = el.scrollHeight;
-  }, [activeThreadKey]);
+  }, [activeThreadId, loaded]);
 
   // The re-pin window above: while it's open and the view is still pinned,
   // any growth of the transcript column snaps the end back into view. The
@@ -757,7 +783,7 @@ function Messages() {
   // also match only semantically; then nothing highlights, by design.
   const highlightTerm = useStore((s) => s.highlightTerm);
   const setHighlightTerm = useStore((s) => s.setHighlightTerm);
-  const sessionId = useStore((s) => s.resumeSessionId);
+  const sessionId = useActiveThread((t) => t.resumeSessionId);
   const [matchCount, setMatchCount] = useState(0);
   // Scroll to the first match once per (session, term) — items keep changing
   // during streaming and re-running the scroll would yank the view.
@@ -865,7 +891,11 @@ function Messages() {
         // the column stays centered over the composer.
         className="h-full overflow-y-auto [scrollbar-gutter:stable_both-edges] pt-4 pb-52"
       >
-        {items.length === 0 && <EmptyState />}
+        {!loaded ? (
+          <TranscriptSkeleton />
+        ) : (
+          items.length === 0 && <EmptyState />
+        )}
         {/* Same max-w-3xl column as the settings page — on a wide window the
             conversation stays a readable measure instead of stretching. */}
         {/* Activity (tool/thinking) lines zero their own margins so consecutive
@@ -877,13 +907,14 @@ function Messages() {
           ref={contentRef}
           className="mx-auto w-full px-6 max-w-3xl space-y-3 [&>.text-xs]:my-0 [&>.text-xs+*]:mt-3 [&>.text-xs+.text-xs]:mt-0 [&>:not(.text-xs)+.text-xs]:mt-1"
         >
-          {blocks.map((block, i) => (
-            <TranscriptBlock
-              key={block.key}
-              block={block}
-              interstitial={blocks[i + 1]?.kind === "activity"}
-            />
-          ))}
+          {loaded &&
+            blocks.map((block, i) => (
+              <TranscriptBlock
+                key={block.key}
+                block={block}
+                interstitial={blocks[i + 1]?.kind === "activity"}
+              />
+            ))}
           {/* Live streaming tail: the block currently being generated. The
           complete item replaces it (store clears the buffer), so it never
           coexists with its own final render. */}
@@ -941,7 +972,7 @@ const DEFAULT_CONTEXT_WINDOW = 200_000;
 /** Circular gauge next to Send showing how full the model's context window is
  *  for the open thread. Amber past 70%; hover reveals the exact numbers. */
 function ContextRing() {
-  const usage = useStore((s) => s.contextUsage);
+  const usage = useActiveThread((t) => t.contextUsage);
   const model = useStore((s) => s.model);
   const provider = useStore((s) => s.modelProvider ?? s.settings?.authMode);
   const runOptions = useStore((s) =>
@@ -1038,9 +1069,9 @@ function ContextRing() {
 }
 
 function Composer() {
-  const runState = useStore((s) => s.runState);
-  const statusLine = useStore((s) => s.statusLine);
-  const runModel = useStore((s) => s.runModel);
+  const runState = useActiveThread((t) => t.runState);
+  const statusLine = useActiveThread((t) => t.statusLine);
+  const runModel = useActiveThread((t) => t.runModel);
   const pickedModel = useStore((s) => s.model);
   // The picker already names the model — repeat it only when the run is
   // actually on something else (mid-thread switch, provider fallback).
@@ -1048,7 +1079,7 @@ function Composer() {
     runModel && !isPickedModel(pickedModel, runModel) ? runModel : null;
   const workspaces = useStore((s) => s.workspaces);
   const allSkills = useStore((s) => s.skills);
-  const draft = useStore((s) => s.composerDraft);
+  const draft = useActiveThread((t) => t.composerDraft);
   const setDraft = useStore((s) => s.setComposerDraft);
   const settingsOpen = useStore((s) => s.settingsOpen);
   const taRef = useRef<HTMLTextAreaElement>(null);

@@ -6,7 +6,7 @@ import type {
   ProviderId,
   RunOptions,
 } from "../shared/ipc";
-import { uid, useStore } from "./store";
+import { activeThread, uid, useStore } from "./store";
 import { choiceKey, controlsFor, resolveRunOptions } from "./lib/models";
 import { bytesToBase64 } from "./util";
 import { forwardConsole } from "./lib/consoleForward";
@@ -14,26 +14,30 @@ import { zoomIn, zoomOut, zoomReset } from "./lib/zoom";
 import { perf } from "./lib/perf";
 import { createMessageHandlers } from "./messageHandlers";
 
-/** Count every incoming message by type (stream events by kind) for the
- *  performance diagnostics — the bursts after a bun stall show up here. */
+/** Count every incoming message by type for the performance diagnostics —
+ *  the bursts after a bun stall show up here. */
 function counted<T extends Record<string, (payload: any) => void>>(
   handlers: T,
 ): T {
   const out: Record<string, (payload: any) => void> = {};
   for (const [type, handler] of Object.entries(handlers)) {
     out[type] = (payload) => {
-      perf.countMessage(
-        type === "streamEvent" ? `streamEvent:${payload?.kind}` : type,
-        payload,
-      );
+      perf.countMessage(type, payload);
       handler(payload);
     };
   }
   return out as T;
 }
 
-const { handlers: messageHandlers, flushStream } = createMessageHandlers({
+const { handlers: messageHandlers } = createMessageHandlers({
   refreshSidebar,
+  resyncThread: (sessionId) => {
+    // A batch went missing while this Thread streamed: drop its transcript
+    // and reload it from disk (now, if it's on screen; else on next open).
+    useStore.getState().invalidateThread(sessionId);
+    if (activeThread(useStore.getState()).resumeSessionId === sessionId)
+      void api.openSession(sessionId);
+  },
   getSettings: () => void api.getSettings(),
   refreshOllama: () => void refreshOllama(),
   zoom: (direction) => {
@@ -122,15 +126,20 @@ async function request<K extends keyof MonadRPC["bun"]["requests"]>(
   }
 }
 
+/** Sessions whose history is being fetched — a second open of a Thread
+ *  still loading waits for the same fetch instead of starting another. */
+const historyLoads = new Set<string>();
+
 export const api = {
   async startRun(prompt: string) {
     const store = useStore.getState();
+    const thread = activeThread(store);
     // One run per THREAD — other threads and background runs (ingest,
     // scheduled jobs) all proceed in parallel. Guarding here (not just on the
     // composer's disabled state) covers every entry point — skill "Run", a
     // job's "Run now" — and prevents the phantom user bubble + error that
     // would otherwise flip runState back to idle mid-stream.
-    if (store.runState === "running") {
+    if (thread.runState === "running") {
       store.push({
         type: "info",
         text: "A run is already active in this thread.",
@@ -148,18 +157,16 @@ export const api = {
       const res = await request("startRun", {
         prompt,
         runId,
-        resumeSessionId: store.resumeSessionId ?? undefined,
+        resumeSessionId: thread.resumeSessionId ?? undefined,
         model: store.model || undefined,
         provider: store.modelProvider ?? undefined,
         runOptions: currentRunOptions(),
       });
       if ("error" in res) {
-        flushStream();
         store.applyEvent({ kind: "run-error", runId, error: res.error });
       }
     } catch (e) {
       // Transport failure — release the thread (request() already surfaced it).
-      flushStream();
       store.applyEvent({
         kind: "run-error",
         runId,
@@ -169,7 +176,7 @@ export const api = {
   },
 
   async abortRun() {
-    const { activeRunId } = useStore.getState();
+    const { activeRunId } = activeThread(useStore.getState());
     if (activeRunId) await request("abortRun", { runId: activeRunId });
   },
 
@@ -185,17 +192,22 @@ export const api = {
   },
 
   async openSession(sessionId: string) {
+    // A Thread in memory (loaded or loading) is just shown — no RPC. One
+    // that isn't is shown at once as a skeleton while its history loads.
+    const store = useStore.getState();
+    store.startThreadLoad(sessionId);
     const s = useStore.getState();
-    // Already open with a run streaming: re-fetching would clone the thread
-    // into a stale idle copy next to the live one — there's nothing to load.
-    if (s.resumeSessionId === sessionId && s.runState === "running") return;
-    // A Thread already in memory (streaming in the background, or recently
-    // left) has newer state than disk: switch to it, no history fetch.
-    flushStream();
-    if (useStore.getState().switchToThread(sessionId)) return;
-    const res = await request("getSessionHistory", { sessionId });
-    flushStream();
-    useStore.getState().openHistory(sessionId, res.items, res.contextTokens);
+    if (activeThread(s).loaded || historyLoads.has(sessionId)) return;
+    historyLoads.add(sessionId);
+    try {
+      const res = await request("getSessionHistory", { sessionId });
+      useStore.getState().openHistory(sessionId, res.items, res.contextTokens);
+    } catch {
+      // request() surfaced the error; don't leave a skeleton behind
+      useStore.getState().abandonThreadLoad(sessionId);
+    } finally {
+      historyLoads.delete(sessionId);
+    }
   },
 
   async renameSession(sessionId: string, title: string) {

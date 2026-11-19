@@ -1,12 +1,16 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { FakeAgentSession } from "../bun/dev/FakeAgentSession";
 import type { AgentStreamEvent } from "../shared/ipc";
-import type { ThreadSnapshot, useStore as UseStore } from "./store";
+import type {
+  activeThread as ActiveThread,
+  ThreadState,
+  useStore as UseStore,
+} from "./store";
 
 /** Store cost per update (PARALLEL-THREADS-PR1-MEASURE.html §5): replay
  *  10 000 stream events spread over 10 Threads into applyEvent. Later PRs add
  *  their own guarantees here (PR 3: toBlocks keeps block identity; PR 4: a
- *  switch to an in-memory Thread makes no RPC). */
+ *  switch to an in-memory Thread makes no RPC — store.threads.test.ts). */
 
 const THREADS = 10;
 const EVENTS = 10_000;
@@ -14,7 +18,7 @@ const EVENTS = 10_000;
  *  10×+ regression while leaving room for a slower CI runner. */
 const BUDGET_MS = 400;
 
-/** Every field of a Thread the visible chat reads from the top level. */
+/** Every field of a Thread the visible chat reads. */
 const VISIBLE_SLICES = {
   items: true,
   streamingText: true,
@@ -29,10 +33,15 @@ const VISIBLE_SLICES = {
   artifacts: true,
   activeArtifact: true,
   artifactPanelOpen: true,
-} satisfies Record<keyof ThreadSnapshot, true>;
-const sliceKeys = Object.keys(VISIBLE_SLICES) as (keyof ThreadSnapshot)[];
+  loaded: true,
+  pending: true,
+  stale: true,
+  scrollOffset: true,
+} satisfies Record<keyof ThreadState, true>;
+const sliceKeys = Object.keys(VISIBLE_SLICES) as (keyof ThreadState)[];
 
 let useStore: typeof UseStore;
+let activeThread: typeof ActiveThread;
 /** One recorded fake run (runId "rec"), as the webview receives it. */
 let recording: AgentStreamEvent[];
 
@@ -44,7 +53,7 @@ beforeAll(async () => {
     setItem: (k: string, v: string) => void mem.set(k, v),
     removeItem: (k: string) => void mem.delete(k),
   };
-  ({ useStore } = await import("./store"));
+  ({ useStore, activeThread } = await import("./store"));
 
   recording = [];
   const session = new FakeAgentSession({
@@ -82,8 +91,8 @@ function eventsFor(i: number): AgentStreamEvent[] {
 /** Fresh store with 10 Threads, each with a run registered; thread 0 is the
  *  one on screen. Returns the events round-robin across all threads. */
 function setup(): AgentStreamEvent[] {
-  // Other test files share this store module: start from no stashed threads.
-  useStore.setState({ threads: {} });
+  // Other test files share this store module: start from no other threads.
+  useStore.setState({ threads: {}, runThreads: {}, runningSessions: {} });
   const s = useStore.getState();
   for (let i = THREADS - 1; i >= 0; i--) {
     s.newChat();
@@ -115,8 +124,8 @@ describe("store cost per update", () => {
     console.log(`[store.perf] ${EVENTS} events in ${ms.toFixed(1)} ms`);
     expect(ms).toBeLessThan(BUDGET_MS);
     // the events really landed: every thread grew its transcript
-    const { threads, items } = useStore.getState();
-    expect(items.length).toBeGreaterThan(0);
+    const { threads } = useStore.getState();
+    expect(activeThread(useStore.getState()).items.length).toBeGreaterThan(0);
     for (const t of Object.values(threads))
       expect(t.items.length).toBeGreaterThan(0);
   });
@@ -130,9 +139,9 @@ describe("store cost per update", () => {
         useStore.getState().applyEvent(e);
         continue;
       }
-      const before = useStore.getState();
-      before.applyEvent(e);
-      const after = useStore.getState();
+      const before = activeThread(useStore.getState());
+      useStore.getState().applyEvent(e);
+      const after = activeThread(useStore.getState());
       for (const key of sliceKeys) {
         if (after[key] !== before[key]) {
           throw new Error(
@@ -146,22 +155,15 @@ describe("store cost per update", () => {
   });
 });
 
-describe("one store update per frame (PR 3g)", () => {
+describe("one store update per stream batch (PR 3g / 4b)", () => {
   /** The store's observable result, minus the per-setup random thread keys. */
-  /** Stashed threads from earlier setups, left out of the comparison. */
-  let earlier = new Set<string>();
-  const freshSetup = () => {
-    const { threads, activeThreadKey } = useStore.getState();
-    // the thread on screen now gets stashed by setup — it's earlier too
-    earlier = new Set([...Object.keys(threads), activeThreadKey]);
-    return setup();
-  };
+  const freshSetup = setup;
   const outcome = () => {
     const s = useStore.getState();
     return {
-      visible: sliceKeys.map((k) => s[k]),
+      visible: sliceKeys.map((k) => activeThread(s)[k]),
       background: Object.entries(s.threads)
-        .filter(([k]) => !earlier.has(k))
+        .filter(([k]) => k !== s.activeThreadId)
         .map(([, t]) => t.items.length),
       runningSessions: s.runningSessions,
       unread: s.unreadSessions,
@@ -196,7 +198,7 @@ describe("no history re-fetch for Threads in memory (PR 3d)", () => {
     );
     expect(target).toBeDefined();
     expect(useStore.getState().switchToThread("session-3")).toBe(true);
-    const s = useStore.getState();
+    const s = activeThread(useStore.getState());
     expect(s.resumeSessionId).toBe("session-3");
     expect(s.items).toBe(target!.items);
   });
@@ -214,12 +216,12 @@ describe("stable transcript blocks (PR 3e)", () => {
 
   test("appending an item keeps every earlier block reference-equal", () => {
     const events = setup();
-    let prevItems = useStore.getState().items;
+    let prevItems = activeThread(useStore.getState()).items;
     let prev = toBlocks(prevItems);
     let appends = 0;
     for (const e of events) {
       useStore.getState().applyEvent(e);
-      const items = useStore.getState().items;
+      const items = activeThread(useStore.getState()).items;
       if (items === prevItems) continue;
       const blocks = toBlocks(items, prev);
       // An append can grow the last block or add one; a tool result

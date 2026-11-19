@@ -1,10 +1,5 @@
-import type { AgentStreamEvent, MonadRPC } from "../shared/ipc";
+import type { MonadRPC } from "../shared/ipc";
 import { useStore } from "./store";
-import {
-  browserScheduler,
-  createEventBuffer,
-  type FrameScheduler,
-} from "./lib/eventBuffer";
 
 export type WebviewMessageHandlers = {
   [K in keyof MonadRPC["webview"]["messages"]]: (
@@ -15,43 +10,38 @@ export type WebviewMessageHandlers = {
 export type MessageHandlerDeps = {
   /** Full sidebar snapshot — only for a workspace switch. */
   refreshSidebar: () => Promise<void>;
+  /** A Thread missed a stream batch and its run has ended: reload it. */
+  resyncThread: (sessionId: string) => void;
   getSettings: () => void;
   refreshOllama: () => void;
   zoom: (direction: "in" | "out" | "reset") => void;
-  scheduler?: FrameScheduler;
 };
 
-/** Everything bun pushes to the webview, applied to the store. Stream events
- *  are buffered and applied once per animation frame (one store update per
- *  frame, however many events arrived); any message whose meaning depends on
- *  the events before it flushes the buffer first. Sidebar lists arrive as
- *  targeted pushes — nothing here re-fetches them, except a workspace switch. */
+/** Everything bun pushes to the webview, applied to the store. Bun sends
+ *  every streaming Thread's events as one streamBatch per tick, applied in
+ *  one store update; lifecycle events and permission requests are flushed
+ *  by bun in order, so nothing here buffers. Sidebar lists arrive as
+ *  targeted pushes — nothing here re-fetches them, except a workspace
+ *  switch. */
 export function createMessageHandlers(deps: MessageHandlerDeps): {
   handlers: WebviewMessageHandlers;
-  /** Apply buffered stream events now (before history loads, local run
-   *  errors, …). */
-  flushStream: () => void;
 } {
-  const stream = createEventBuffer<AgentStreamEvent>(
-    (batch) => useStore.getState().applyEvents(batch),
-    deps.scheduler ?? browserScheduler,
-  );
   const store = () => useStore.getState();
+  /** Last batch seq seen (null until the first: a reloaded webview joins
+   *  bun's sequence midway). */
+  let lastSeq: number | null = null;
 
   const handlers: WebviewMessageHandlers = {
-    streamEvent: (event) => {
-      stream.push(event);
-      // A run ending changes what the user can do next (send, answer
-      // permissions) — apply it now, not a frame later.
-      if (event.kind === "run-finished" || event.kind === "run-error")
-        stream.flush();
+    streamBatch: ({ seq, runs }) => {
+      // A gap means a batch never arrived: every streaming Thread may be
+      // short, so each reloads from disk once its run ends.
+      if (lastSeq !== null && seq !== lastSeq + 1) store().markStreamsStale();
+      lastSeq = seq;
+      const resync = store().applyEvents(runs.flatMap((r) => r.events));
+      for (const sessionId of resync) deps.resyncThread(sessionId);
     },
-    permissionRequest: (req) => {
-      stream.flush();
-      store().enqueuePermission(req);
-    },
+    permissionRequest: (req) => store().enqueuePermission(req),
     workspaceChanged: () => {
-      stream.flush();
       store().newChat();
       void deps.refreshSidebar();
     },
@@ -97,5 +87,5 @@ export function createMessageHandlers(deps: MessageHandlerDeps): {
       }
     },
   };
-  return { handlers, flushStream: stream.flush };
+  return { handlers };
 }
