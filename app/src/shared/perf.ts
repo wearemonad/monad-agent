@@ -16,12 +16,36 @@ export const REPORT_WINDOW_MS = 15 * 60_000;
 /** Bun's event loop was blocked for `ms`; `label` says what was running. */
 export type LagSample = { ts: number; ms: number; label: string };
 /** One bun RPC request handler: duration and response size. */
-export type RpcSample = { ts: number; method: string; ms: number; bytes: number };
+export type RpcSample = {
+  ts: number;
+  method: string;
+  ms: number;
+  bytes: number;
+};
 /** The webview main thread missed its heartbeat for `ms`. */
 export type LongTaskSample = { ts: number; ms: number };
 /** A React commit over 16 ms (Profiler actualDuration). */
-export type RenderSample = { ts: number; id: string; phase: string; ms: number };
-export type ClickTarget = "thread" | "settings";
+export type RenderSample = {
+  ts: number;
+  id: string;
+  phase: string;
+  ms: number;
+};
+/** What a click opened. A Thread click is classified when it is pressed:
+ *  in another workspace (the switch is part of the cost), else streaming
+ *  right now, else idle (its history comes from disk). */
+export type ClickTarget =
+  | "thread-running"
+  | "thread-idle"
+  | "workspace-switch"
+  | "settings";
+
+const CLICK_LABELS: Record<ClickTarget, string> = {
+  "thread-running": "running Thread",
+  "thread-idle": "idle Thread",
+  "workspace-switch": "other workspace",
+  settings: "Settings",
+};
 /** pointerdown → second rAF after the store showed the target. The parts are
  *  offsets from pointerdown: when the RPC answered (thread opens only), when
  *  React committed, and when the frame painted (= totalMs). */
@@ -105,8 +129,8 @@ function groupBy<T>(xs: T[], key: (x: T) => string, value: (x: T) => number) {
   const out = new Map<string, number[]>();
   for (const x of xs) {
     const k = key(x);
-    let list = out.get(k);
-    if (!list) out.set(k, (list = []));
+    const list = out.get(k) ?? [];
+    out.set(k, list);
     list.push(value(x));
   }
   return out;
@@ -137,7 +161,15 @@ export function formatPerfReport(
     `Bun event-loop lag: ${lags.length} events`,
   );
   if (lags.length)
-    out.push(...table(groupBy(lags, (l) => l.label, (l) => l.ms)));
+    out.push(
+      ...table(
+        groupBy(
+          lags,
+          (l) => l.label,
+          (l) => l.ms,
+        ),
+      ),
+    );
 
   const lt = stats(longTasks.map((t) => t.ms));
   out.push(
@@ -147,31 +179,57 @@ export function formatPerfReport(
 
   out.push("", "Click-to-paint");
   if (!clicks.length) out.push("  (no clicks recorded)");
-  for (const target of ["thread", "settings"] as const) {
+  for (const target of Object.keys(CLICK_LABELS) as ClickTarget[]) {
     const cs = clicks.filter((c) => c.target === target);
     if (!cs.length) continue;
     const t = stats(cs.map((c) => c.totalMs));
     const rpc = cs.flatMap((c) => (c.rpcMs === undefined ? [] : [c.rpcMs]));
     const parts = [
       ...(rpc.length ? [`rpc p50 ${ms(percentile(rpc, 50))}`] : []),
-      `commit p50 ${ms(percentile(cs.map((c) => c.commitMs), 50))}`,
-      `paint p50 ${ms(percentile(cs.map((c) => c.paintMs), 50))}`,
+      `commit p50 ${ms(
+        percentile(
+          cs.map((c) => c.commitMs),
+          50,
+        ),
+      )}`,
+      `paint p50 ${ms(
+        percentile(
+          cs.map((c) => c.paintMs),
+          50,
+        ),
+      )}`,
     ];
     out.push(
-      `  ${target.padEnd(8)}  n=${t.n}  p50 ${ms(t.p50)}  p95 ${ms(t.p95)}  max ${ms(t.max)}  (${parts.join(" · ")})`,
+      `  ${CLICK_LABELS[target].padEnd(15)}  n=${t.n}  p50 ${ms(t.p50)}  p95 ${ms(t.p95)}  max ${ms(t.max)}  (${parts.join(" · ")})`,
     );
   }
 
   out.push("", `Slow renders (>16 ms): ${renders.length}`);
   if (renders.length)
-    out.push(...table(groupBy(renders, (r) => r.id, (r) => r.ms)));
+    out.push(
+      ...table(
+        groupBy(
+          renders,
+          (r) => r.id,
+          (r) => r.ms,
+        ),
+      ),
+    );
 
   out.push("", `Slowest RPCs: ${rpcs.length} calls`);
   if (rpcs.length) {
-    const bytes = groupBy(rpcs, (r) => r.method, (r) => r.bytes);
+    const bytes = groupBy(
+      rpcs,
+      (r) => r.method,
+      (r) => r.bytes,
+    );
     out.push(
       ...table(
-        groupBy(rpcs, (r) => r.method, (r) => r.ms),
+        groupBy(
+          rpcs,
+          (r) => r.method,
+          (r) => r.ms,
+        ),
         (m) => {
           const b = bytes.get(m) ?? [];
           return `  ${kb(b.reduce((x, y) => x + y, 0) / (b.length || 1))}`;
@@ -182,9 +240,11 @@ export function formatPerfReport(
   }
 
   out.push("", "Messages to the webview");
-  const windowS =
-    buckets.reduce((sum, b) => sum + b.windowMs, 0) / 1000 || 1;
-  const byType = new Map<string, { count: number; bytes: number; peak: number }>();
+  const windowS = buckets.reduce((sum, b) => sum + b.windowMs, 0) / 1000 || 1;
+  const byType = new Map<
+    string,
+    { count: number; bytes: number; peak: number }
+  >();
   for (const b of buckets) {
     for (const [type, { count, bytes }] of Object.entries(b.byType)) {
       const agg = byType.get(type) ?? { count: 0, bytes: 0, peak: 0 };
@@ -199,7 +259,9 @@ export function formatPerfReport(
   }
   if (!byType.size) out.push("  (none recorded)");
   const typeWidth = Math.max(20, ...[...byType.keys()].map((t) => t.length));
-  for (const [type, agg] of [...byType].sort((a, b) => b[1].count - a[1].count)) {
+  for (const [type, agg] of [...byType].sort(
+    (a, b) => b[1].count - a[1].count,
+  )) {
     out.push(
       `  ${type.padEnd(typeWidth)}  ${(agg.count / windowS).toFixed(1)}/s  peak ${agg.peak.toFixed(1)}/s  ${kb(agg.bytes / windowS)}/s`,
     );

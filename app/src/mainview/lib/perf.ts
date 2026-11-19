@@ -61,7 +61,8 @@ function startHeartbeat(): { stop: () => void } {
     const gap = now - last;
     last = now;
     if (gap > LAG_THRESHOLD_MS) longTasks.push({ ts: Date.now(), ms: gap });
-    if (!stopped) timer = setTimeout(() => channel.port2.postMessage(0), HEARTBEAT_MS);
+    if (!stopped)
+      timer = setTimeout(() => channel.port2.postMessage(0), HEARTBEAT_MS);
   };
   timer = setTimeout(() => channel.port2.postMessage(0), HEARTBEAT_MS);
   return {
@@ -71,6 +72,16 @@ function startHeartbeat(): { stop: () => void } {
       channel.port1.close();
     },
   };
+}
+
+/** Classify a Thread click at press time (see ClickTarget). */
+function threadKind(sessionId?: string, workspaceId?: string): ClickTarget {
+  const s = useStore.getState();
+  const active = s.workspaces.find((w) => w.active)?.id;
+  if (workspaceId && workspaceId !== active) return "workspace-switch";
+  return sessionId && s.runningSessions[sessionId]
+    ? "thread-running"
+    : "thread-idle";
 }
 
 /** The store shows what the pending click asked for. */
@@ -120,7 +131,10 @@ function approxBytes(v: unknown, depth = 0): number {
     for (const x of v) n += approxBytes(x, depth + 1) + 1;
   } else {
     for (const k in v) {
-      n += k.length + 3 + approxBytes((v as Record<string, unknown>)[k], depth + 1);
+      n +=
+        k.length +
+        3 +
+        approxBytes((v as Record<string, unknown>)[k], depth + 1);
     }
   }
   return n;
@@ -172,17 +186,31 @@ export const perf = {
     }
   },
 
-  /** pointerdown on a sidebar Thread row or a Settings entry point. */
-  markClick(target: ClickTarget, sessionId?: string): void {
+  /** pointerdown on a sidebar Thread row or a Settings entry point. A
+   *  Thread click names its workspace only when it may be another one. */
+  markClick(
+    target: "thread" | "settings",
+    sessionId?: string,
+    workspaceId?: string,
+  ): void {
     if (!enabled) return;
-    pending = { target, sessionId, t0: performance.now() };
+    pending = {
+      target:
+        target === "settings" ? "settings" : threadKind(sessionId, workspaceId),
+      sessionId,
+      t0: performance.now(),
+    };
     checkTarget(); // already there (clicking the open Thread)
   },
 
   /** getSessionHistory answered: for a pending Thread click, this is the
    *  "time to RPC response" mark. */
   noteHistoryLoaded(): void {
-    if (pending && pending.storeAt === undefined && pending.target === "thread") {
+    if (
+      pending &&
+      pending.storeAt === undefined &&
+      pending.target !== "settings"
+    ) {
       pending.rpcAt = performance.now();
     }
   },
@@ -201,7 +229,8 @@ export const perf = {
   /** Count one incoming bun → webview message. */
   countMessage(type: string, payload: unknown): void {
     if (!enabled) return;
-    const entry = (messages[type] ??= { count: 0, bytes: 0 });
+    const entry = messages[type] ?? { count: 0, bytes: 0 };
+    messages[type] = entry;
     entry.count++;
     entry.bytes += approxBytes(payload);
   },

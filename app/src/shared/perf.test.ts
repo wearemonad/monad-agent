@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { formatPerfReport, percentile, type PerfSamples } from "./perf";
+import {
+  type ClickTarget,
+  formatPerfReport,
+  percentile,
+  type PerfSamples,
+} from "./perf";
 
 const empty = (): PerfSamples => ({
   lags: [],
@@ -41,37 +46,40 @@ describe("formatPerfReport", () => {
     );
   });
 
-  test("click-to-paint per target, with its parts", () => {
+  test("click-to-paint per kind of click, with its parts", () => {
     const s = empty();
-    for (const [total, rpc] of [
-      [100, 40],
-      [300, 200],
-    ])
+    const click = (target: ClickTarget, total: number, rpc?: number) =>
       s.clicks.push({
         ts: now,
-        target: "thread",
+        target,
         totalMs: total,
-        rpcMs: rpc,
+        ...(rpc === undefined ? {} : { rpcMs: rpc }),
         commitMs: total - 20,
         paintMs: total,
       });
-    s.clicks.push({
-      ts: now,
-      target: "settings",
-      totalMs: 50,
-      commitMs: 30,
-      paintMs: 50,
-    });
+    click("thread-running", 100, 40);
+    click("thread-running", 300, 200);
+    click("thread-idle", 900, 700);
+    click("workspace-switch", 2500, 2000);
+    click("settings", 50);
     const text = formatPerfReport(s, { now, windowMs: 15 * 60_000 });
-    expect(text).toMatch(/thread\s+n=2\s+p50 100\s+p95 300\s+max 300/);
-    expect(text).toMatch(/rpc p50 40 · commit p50 80 · paint p50 100/);
-    expect(text).toMatch(/settings\s+n=1\s+p50 50\s+p95 50\s+max 50/);
+    expect(text).toMatch(
+      /running Thread\s+n=2\s+p50 100\s+p95 300\s+max 300\s+\(rpc p50 40 · commit p50 80 · paint p50 100\)/,
+    );
+    expect(text).toMatch(/idle Thread\s+n=1\s+p50 900/);
+    expect(text).toMatch(/other workspace\s+n=1\s+p50 2500/);
+    expect(text).toMatch(/Settings\s+n=1\s+p50 50\s+p95 50\s+max 50/);
   });
 
   test("slow RPCs ranked by worst duration, with response size", () => {
     const s = empty();
     s.rpcs.push({ ts: now, method: "listSessions", ms: 30, bytes: 2048 });
-    s.rpcs.push({ ts: now, method: "getSessionHistory", ms: 800, bytes: 10240 });
+    s.rpcs.push({
+      ts: now,
+      method: "getSessionHistory",
+      ms: 800,
+      bytes: 10240,
+    });
     const text = formatPerfReport(s, { now, windowMs: 15 * 60_000 });
     expect(text.indexOf("getSessionHistory")).toBeLessThan(
       text.indexOf("listSessions"),

@@ -12,7 +12,10 @@ import * as path from "node:path";
 
 const seconds = Number(process.argv[2]) || 180;
 const threads = Number(process.argv[3]) || 5;
-const reportFile = path.join(os.homedir(), "Library/Logs/Monad/perf-stress.txt");
+const reportFile = path.join(
+  os.homedir(),
+  "Library/Logs/Monad/perf-stress.txt",
+);
 const START = "=== MONAD PERF REPORT ===";
 const END = "=== END PERF REPORT ===";
 // Build + launch + harness warm-up + the run itself + the report hand-off.
@@ -40,7 +43,8 @@ const onData = (chunk: Buffer) => {
   const text = chunk.toString();
   output += text;
   for (const line of text.split("\n")) {
-    if (/\[perf\]|error/i.test(line) && !line.includes(START)) console.log(line);
+    if (/\[perf\]|error/i.test(line) && !line.includes(START))
+      console.log(line);
   }
   const start = output.indexOf(START);
   const end = output.indexOf(END, start);
@@ -59,7 +63,9 @@ const stop = () => {
   }
 };
 
-const exited = new Promise<void>((resolve) => child.on("exit", () => resolve()));
+const exited = new Promise<void>((resolve) =>
+  child.on("exit", () => resolve()),
+);
 while (!report && Date.now() < deadline) {
   const done = await Promise.race([
     exited.then(() => true),

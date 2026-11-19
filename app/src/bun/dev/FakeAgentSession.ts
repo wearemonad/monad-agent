@@ -129,9 +129,10 @@ const TOOLS = [
   },
   {
     call: { name: "Read", inputSummary: "knowledge/product/roadmap.md" },
-    output: "# Roadmap\n\n- Q4: parallel threads\n- Q1: shared workspaces\n".repeat(
-      8,
-    ),
+    output:
+      "# Roadmap\n\n- Q4: parallel threads\n- Q1: shared workspaces\n".repeat(
+        8,
+      ),
   },
   {
     call: { name: "mcp__memory__search", inputSummary: 'query: "onboarding"' },

@@ -1,6 +1,7 @@
 import Electrobun, { Electroview } from "electrobun/view";
 import type {
   DriveFolder,
+  HarnessThread,
   MonadRPC,
   ProviderId,
   RunOptions,
@@ -783,10 +784,16 @@ export async function refreshOllama() {
   return status;
 }
 
-/** Dev builds with MONAD_FAKE_AGENT: start a run in every fake Thread, and
- *  for `bun run perf:stress` click between Threads and Settings every
- *  `everyMs` (the automation hook), then hand over to bun for the report.
- *  A no-op in release builds — bun answers with no fake Threads. */
+/** Dev builds with MONAD_FAKE_AGENT: start a run in every fake Thread (bun
+ *  spreads them over up to three workspaces). For `bun run perf:stress`,
+ *  then click every `everyMs` (the automation hook) through a cycle that
+ *  covers each kind of switch:
+ *    running Thread → another running Thread (direct, sidebar-style)
+ *    → the workspace's largest existing idle Thread → Settings → back
+ *    → a Thread in another workspace (idle or running, alternately)
+ *    → a running Thread back in the home workspace
+ *  and finally hand over to bun for the report. A no-op in release builds —
+ *  bun answers with no fake Threads. */
 async function runDevHarness(): Promise<void> {
   let harness: MonadRPC["bun"]["requests"]["devHarness"]["response"];
   // Straight to the transport, not request(): an older bun without this
@@ -796,34 +803,64 @@ async function runDevHarness(): Promise<void> {
   } catch {
     return;
   }
-  const ids = harness.fakeSessionIds;
-  if (!ids.length) return;
-  await refreshSidebar();
-  for (const sessionId of ids) {
-    useStore.getState().setSettingsOpen(false);
-    await api.openSession(sessionId);
+  const { homeWorkspaceId: home, fakeThreads, idleThreads } = harness;
+  if (!fakeThreads.length) return;
+  useStore.getState().setSettingsOpen(false);
+  for (const t of fakeThreads) {
+    await api.openThread(t.workspaceId, t.sessionId);
     await api.startRun("Keep streaming — fake agent run.");
   }
+  const homeRunning = fakeThreads.filter((t) => t.workspaceId === home);
+  const otherRunning = fakeThreads.filter((t) => t.workspaceId !== home);
+  const homeIdle = idleThreads.filter((t) => t.workspaceId === home);
+  const otherIdle = idleThreads.filter((t) => t.workspaceId !== home);
+  await api.openThread(home, homeRunning[0].sessionId);
   const stress = harness.stress;
   if (!stress) return;
+
+  const turn: Record<string, number> = {};
+  const next = (name: string, list: HarnessThread[]) => {
+    turn[name] = (turn[name] ?? -1) + 1;
+    return list[turn[name] % list.length];
+  };
+  const open = async (t: HarnessThread) => {
+    perf.markClick("thread", t.sessionId, t.workspaceId);
+    await api.openThread(t.workspaceId, t.sessionId);
+  };
+  let away = 0;
+  const steps: (() => Promise<void>)[] = [
+    () => open(next("home-running", homeRunning)),
+    () => open(next("home-running", homeRunning)),
+    ...(homeIdle.length ? [() => open(next("home-idle", homeIdle))] : []),
+    async () => {
+      perf.markClick("settings");
+      useStore.getState().setSettingsOpen(true);
+    },
+    async () => useStore.getState().setSettingsOpen(false), // back, unmeasured
+    ...(otherRunning.length || otherIdle.length
+      ? [
+          () =>
+            open(
+              otherIdle.length && (away++ % 2 === 0 || !otherRunning.length)
+                ? next("other-idle", otherIdle)
+                : next("other-running", otherRunning),
+            ),
+          () => open(next("home-running", homeRunning)),
+        ]
+      : []),
+  ];
+
   const end = Date.now() + stress.durationMs;
   let n = 0;
   const step = async () => {
     if (Date.now() >= end) {
+      useStore.getState().setSettingsOpen(false);
+      await api.openThread(home, homeRunning[0].sessionId); // end where we began
       perf.flushNow();
       await request("perfStressDone", {});
       return;
     }
-    if (n % 2 === 0) {
-      const sessionId = ids[(n / 2) % ids.length];
-      perf.markClick("thread", sessionId);
-      useStore.getState().setSettingsOpen(false);
-      await api.openSession(sessionId);
-    } else {
-      perf.markClick("settings");
-      useStore.getState().setSettingsOpen(true);
-    }
-    n++;
+    await steps[n++ % steps.length]();
     setTimeout(() => void step(), stress.everyMs);
   };
   setTimeout(() => void step(), stress.everyMs);

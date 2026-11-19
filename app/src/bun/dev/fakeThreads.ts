@@ -84,19 +84,19 @@ function answer(i: number, turn: number): string {
   ].join("\n");
 }
 
-/** Write `count` fake Threads with `messages` pre-existing messages each
- *  (half user, half assistant). Rewritten on every launch, so each run of the
- *  harness starts from the same history. Returns their session ids. */
+/** Write the fake Threads numbered `indices` into one workspace, with
+ *  `messages` pre-existing messages each (half user, half assistant).
+ *  Rewritten on every launch, so each run of the harness starts from the
+ *  same history. Returns their session ids. */
 export function seedFakeThreads(
   cwd: string,
   workspaceId: string,
-  count: number,
+  indices: number[],
   messages = 40,
 ): string[] {
-  const n = Math.min(count, MAX_FAKE_THREADS);
   fs.mkdirSync(claudeProjectDir(cwd), { recursive: true });
   const ids: string[] = [];
-  for (let i = 0; i < n; i++) {
+  for (const i of indices.filter((n) => n < MAX_FAKE_THREADS)) {
     const sessionId = fakeSessionId(i);
     const lines: Line[] = [];
     let parent: string | null = null;
@@ -143,7 +143,10 @@ export function appendFakeTurn(
       text,
     );
     leaves.set(sessionId, pair[1].uuid as string);
-    const lines = [...pair, { type: "tag", tag: monadTag(workspaceId), sessionId }];
+    const lines = [
+      ...pair,
+      { type: "tag", tag: monadTag(workspaceId), sessionId },
+    ];
     fs.appendFileSync(
       fakeFile(cwd, i),
       `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`,
@@ -158,4 +161,27 @@ export function removeFakeThreads(cwd: string): void {
   for (let i = 0; i < MAX_FAKE_THREADS; i++) {
     fs.rmSync(fakeFile(cwd, i), { force: true });
   }
+}
+
+export const isFakeSessionId = (id: string) =>
+  id.startsWith("00000000-fa4e-4000-8000-");
+
+/** Session ids ordered largest file first: the long, real Threads the
+ *  harness opens as "idle" targets. Ids without a file are left out. */
+export function largestSessions(
+  cwd: string,
+  sessionIds: string[],
+  limit: number,
+): { sessionId: string; bytes: number }[] {
+  const dir = claudeProjectDir(cwd);
+  const sized: { sessionId: string; bytes: number }[] = [];
+  for (const sessionId of sessionIds) {
+    try {
+      const bytes = fs.statSync(path.join(dir, `${sessionId}.jsonl`)).size;
+      sized.push({ sessionId, bytes });
+    } catch {
+      // not a Claude session file (an OpenAI thread, or gone)
+    }
+  }
+  return sized.sort((a, b) => b.bytes - a.bytes).slice(0, limit);
 }

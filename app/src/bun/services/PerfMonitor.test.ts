@@ -27,7 +27,8 @@ afterEach(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const log = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, "utf8") : "");
+const log = () =>
+  fs.existsSync(logFile) ? fs.readFileSync(logFile, "utf8") : "";
 
 describe("PerfMonitor", () => {
   test("a block inside perf.run is a lag event named after the task", async () => {
@@ -119,7 +120,7 @@ describe("PerfMonitor", () => {
     expect(log()).toMatch(/webview long-task 240ms/);
     expect(log()).toMatch(/webview click settings 420ms/);
     const report = perf.report();
-    expect(report).toMatch(/settings\s+n=1\s+p50 420/);
+    expect(report).toMatch(/Settings\s+n=1\s+p50 420/);
     expect(report).toMatch(/Messages\s+1\s+35/);
     expect(report).toMatch(/streamEvent\s+20\.0\/s/);
   });
@@ -128,7 +129,9 @@ describe("PerfMonitor", () => {
     await perf.stop();
     perf = new PerfMonitor({ logFile, enabled: false, intervalMs: 10 });
     perf.start();
-    const handlers = perf.instrument({ ping: (_: Record<string, never>) => "pong" });
+    const handlers = perf.instrument({
+      ping: (_: Record<string, never>) => "pong",
+    });
     await sleep(30);
     perf.run("loop:memory", () => block(150));
     expect(handlers.ping({})).toBe("pong");

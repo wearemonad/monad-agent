@@ -115,7 +115,8 @@ describe("store cost per update", () => {
     // the events really landed: every thread grew its transcript
     const { threads, items } = useStore.getState();
     expect(items.length).toBeGreaterThan(0);
-    for (const t of Object.values(threads)) expect(t.items.length).toBeGreaterThan(0);
+    for (const t of Object.values(threads))
+      expect(t.items.length).toBeGreaterThan(0);
   });
 
   test("events for a background Thread leave the visible Thread's slices untouched", () => {

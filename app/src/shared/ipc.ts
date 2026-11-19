@@ -484,6 +484,9 @@ export type OllamaStatus = {
   recommended: RecommendedModel[];
 };
 
+/** A Thread the dev harness opens (see devHarness). */
+export type HarnessThread = { workspaceId: string; sessionId: string };
+
 export type SettingsView = {
   appVersion: string;
   channel: string;
@@ -746,12 +749,17 @@ export type MonadRPC = {
        *  (Settings → Advanced → Copy performance report). */
       getPerfReport: { params: {}; response: { text: string } };
       /** Dev builds: what the fake-stream harness wants the webview to do —
-       *  start a run in each fake Thread, then (perf:stress) click between
-       *  Threads and Settings. Empty in release builds. */
+       *  start a run in each fake Thread (spread over the workspaces), then
+       *  (perf:stress) click between running Threads, existing idle Threads,
+       *  other workspaces and Settings. Empty in release builds. */
       devHarness: {
         params: {};
         response: {
-          fakeSessionIds: string[];
+          /** The workspace active at launch; the harness ends there. */
+          homeWorkspaceId: string;
+          fakeThreads: HarnessThread[];
+          /** The largest existing Threads of each workspace. */
+          idleThreads: HarnessThread[];
           stress?: { durationMs: number; everyMs: number };
         };
       };

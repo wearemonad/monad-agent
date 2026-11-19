@@ -159,6 +159,8 @@ import { schedulerLoops } from "./services/SchedulerLoop";
 import { PerfMonitor } from "./services/PerfMonitor";
 import {
   appendFakeTurn,
+  isFakeSessionId,
+  largestSessions,
   removeFakeThreads,
   seedFakeThreads,
 } from "./dev/fakeThreads";
@@ -484,10 +486,7 @@ const memoryIndex = new MemoryIndexService(embedder);
 /** Freshen a workspace's memory index — incremental (mtime-stamped), so it's
  *  cheap when nothing changed. Failures degrade recall, never break callers.
  *  Embedding backfill runs detached: search works keyword-only meanwhile. */
-function syncMemory(
-  workspaceId: string,
-  workspacePath: string,
-): Promise<void> {
+function syncMemory(workspaceId: string, workspacePath: string): Promise<void> {
   return perf.run("syncMemory", async () => {
     try {
       memoryIndex.syncKnowledge(workspacePath);
@@ -2999,15 +2998,48 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         return { ok: true };
       },
       getPerfReport: () => ({ text: perf.report(perfReportHeader()) }),
-      devHarness: () => {
-        const ws = activeWs();
+      devHarness: async () => {
+        const home = activeWs();
         if (!fakeAgentThreads) {
           // Leftovers of a harness run that didn't quit cleanly.
-          if (isDevBuild) removeFakeThreads(ws.path);
-          return { fakeSessionIds: [] };
+          if (isDevBuild) {
+            for (const ws of workspaces.list()) removeFakeThreads(ws.path);
+          }
+          return { homeWorkspaceId: home.id, fakeThreads: [], idleThreads: [] };
         }
+        // Home first, then up to two more workspaces: the fake Threads are
+        // dealt round-robin over them, so streams run in several at once.
+        const spread = [
+          home,
+          ...workspaces.list().filter((w) => w.id !== home.id),
+        ].slice(0, 3);
+        const fakeThreads = spread.flatMap((ws, w) => {
+          const indices: number[] = [];
+          for (let i = w; i < fakeAgentThreads; i += spread.length) {
+            indices.push(i);
+          }
+          return seedFakeThreads(ws.path, ws.id, indices).map((sessionId) => ({
+            workspaceId: ws.id,
+            sessionId,
+          }));
+        });
+        const idleThreads = [];
+        for (const ws of workspaces.list()) {
+          const listed = await sessions.list(ws.path, ws.id);
+          const real = listed
+            .map((s) => s.sessionId)
+            .filter((id) => !isFakeSessionId(id));
+          for (const t of largestSessions(ws.path, real.slice(0, 50), 3)) {
+            idleThreads.push({ workspaceId: ws.id, sessionId: t.sessionId });
+          }
+        }
+        console.info(
+          `[perf] harness: ${fakeThreads.length} fake Threads over ${spread.length} workspace(s), ${idleThreads.length} idle Threads over ${new Set(idleThreads.map((t) => t.workspaceId)).size} workspace(s)`,
+        );
         return {
-          fakeSessionIds: seedFakeThreads(ws.path, ws.id, fakeAgentThreads),
+          homeWorkspaceId: home.id,
+          fakeThreads,
+          idleThreads,
           ...(perfStressMs
             ? { stress: { durationMs: perfStressMs, everyMs: 2_000 } }
             : {}),
@@ -3024,7 +3056,9 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           } catch {
             // the console copy below still reaches perf-stress.ts
           }
-          console.log(`\n=== MONAD PERF REPORT ===\n${text}\n=== END PERF REPORT ===`);
+          console.log(
+            `\n=== MONAD PERF REPORT ===\n${text}\n=== END PERF REPORT ===`,
+          );
           void perf.flush().then(() => Utils.quit());
         }, 2_500);
         return { ok: true };
@@ -3579,7 +3613,9 @@ function rawLoopSpecs(): LoopSpec[] {
 const quitGuard = createQuitGuard({
   dispose: async () => {
     await Promise.all([appRuntime.dispose(), perf.stop()]);
-    if (fakeAgentThreads) removeFakeThreads(activeWs().path);
+    if (fakeAgentThreads) {
+      for (const ws of workspaces.list()) removeFakeThreads(ws.path);
+    }
   },
   quit: () => Utils.quit(),
   timeoutMs: 3_000,

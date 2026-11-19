@@ -159,7 +159,8 @@ export class PerfMonitor {
     s.renders.push(...report.renders);
     s.clicks.push(...report.clicks);
     s.messages.push(report.messages);
-    for (const t of report.longTasks) this.log(`webview long-task ${round(t.ms)}ms`);
+    for (const t of report.longTasks)
+      this.log(`webview long-task ${round(t.ms)}ms`);
     for (const r of report.renders)
       this.log(`webview render ${r.id} ${r.phase} ${round(r.ms)}ms`);
     for (const c of report.clicks) {
@@ -291,7 +292,8 @@ function sizeOf(value: unknown): number {
 function rotateOnce(file: string): void {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    if (fs.statSync(file).size > MAX_LOG_BYTES) fs.renameSync(file, `${file}.1`);
+    if (fs.statSync(file).size > MAX_LOG_BYTES)
+      fs.renameSync(file, `${file}.1`);
   } catch {
     // no log yet
   }
