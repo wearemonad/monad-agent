@@ -72,11 +72,13 @@ export default {
     },
   },
   scripts: {
-    // Copies the embedder's external packages (marked external in build.bun
-    // above) into the packaged app's bun/node_modules, pruned to the target
-    // platform's native binaries. Dev builds resolve from the project's
-    // node_modules and don't need this, but the hook is harmless there.
-    postBuild: "scripts/bundle-onnx.ts",
+    // 1. Builds the backend's Bun Workers (memoryIndex.worker.js) next to
+    //    the bundled index.js — Bun.build doesn't follow `new Worker(url)`.
+    //    Dev builds need this too: they also run the bundled index.js.
+    // 2. Copies the embedder's external packages (marked external in
+    //    build.bun above) into the packaged app's bun/node_modules, pruned to
+    //    the target platform's native binaries.
+    postBuild: "scripts/post-build.ts",
   },
   release: {
     // Where packaged apps poll for updates + the diff base for patch generation.

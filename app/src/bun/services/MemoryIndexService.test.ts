@@ -309,6 +309,147 @@ describe("MemoryIndexService", () => {
   });
 });
 
+describe("incremental session indexing", () => {
+  /** Counts every text it is asked to embed. */
+  const embedded: string[] = [];
+  const counting: Embedder = {
+    modelId: () => "fake-v1",
+    embed: async (texts) => {
+      embedded.push(...texts);
+      return texts.map(fakeVector);
+    },
+  };
+  const wsInc = path.join(root, "incremental");
+  const jsonlPath = path.join(root, "incremental-session.jsonl");
+  const source = { sessionId: "inc", title: "Payments chat", jsonlPath };
+  const exchange = (q: string, a: string) =>
+    `${sessionLine("user", q)}\n${sessionLine("assistant", a)}\n`;
+
+  test("appending to a Session embeds only the new exchange", async () => {
+    const index = new MemoryIndexService(counting);
+    fs.writeFileSync(
+      jsonlPath,
+      exchange(
+        "How does Acme pay us these days?",
+        "Acme pays net-30 through Stripe since March.",
+      ) +
+        exchange(
+          "Who handles the hiring loop?",
+          "The recruiter runs it; the candidate pool closes Friday.",
+        ),
+    );
+    index.syncSessions(wsInc, [source]);
+    await index.backfillEmbeddings(wsInc);
+    expect(embedded).toHaveLength(2);
+
+    embedded.length = 0;
+    fs.appendFileSync(
+      jsonlPath,
+      exchange(
+        "Where is the product hosted?",
+        "On a Hetzner server; deploys go out from CI.",
+      ),
+    );
+    index.syncSessions(wsInc, [source]);
+    await index.backfillEmbeddings(wsInc);
+    expect(embedded).toHaveLength(1);
+    expect(embedded[0]).toContain("Hetzner");
+
+    // Search still sees the whole conversation, in order.
+    const chunks = index.sessionChunks(wsInc, "inc");
+    expect(chunks.map((c) => c.body.slice(6, 20))).toEqual([
+      "How does Acme ",
+      "Who handles th",
+      "Where is the p",
+    ]);
+    const hits = await index.search(wsInc, "Hetzner", { scope: "session" });
+    expect(hits[0].body).toContain("Hetzner");
+    index.close();
+  });
+
+  test("a reply landing after its question updates that exchange only", async () => {
+    const index = new MemoryIndexService(counting);
+    const ws2 = path.join(root, "incremental-reply");
+    fs.writeFileSync(
+      jsonlPath,
+      exchange("How does Acme pay us these days?", "Net-30 through Stripe.") +
+        `${sessionLine("user", "And who handles the hiring loop now?")}\n`,
+    );
+    index.syncSessions(ws2, [source]);
+    await index.backfillEmbeddings(ws2);
+    embedded.length = 0;
+    fs.appendFileSync(
+      jsonlPath,
+      `${sessionLine("assistant", "The recruiter runs the hiring loop.")}\n`,
+    );
+    index.syncSessions(ws2, [source]);
+    await index.backfillEmbeddings(ws2);
+    expect(embedded).toHaveLength(1);
+    expect(embedded[0]).toContain("recruiter runs");
+    expect(index.sessionChunks(ws2, "inc")).toHaveLength(2);
+    index.close();
+  });
+
+  test("a half-written last line waits until it is complete", async () => {
+    const index = new MemoryIndexService(counting);
+    const ws3 = path.join(root, "incremental-partial");
+    const full = sessionLine("user", "Where is the product hosted today?");
+    fs.writeFileSync(
+      jsonlPath,
+      exchange("How does Acme pay us these days?", "Net-30 through Stripe.") +
+        full.slice(0, 30),
+    );
+    index.syncSessions(ws3, [source]);
+    expect(index.sessionChunks(ws3, "inc")).toHaveLength(1);
+    fs.appendFileSync(jsonlPath, `${full.slice(30)}\n`);
+    index.syncSessions(ws3, [source]);
+    expect(index.sessionChunks(ws3, "inc").map((c) => c.body)).toEqual([
+      "User: How does Acme pay us these days?\nAssistant: Net-30 through Stripe.",
+      "User: Where is the product hosted today?",
+    ]);
+    index.close();
+  });
+
+  test("a file that shrank is re-indexed whole", async () => {
+    const index = new MemoryIndexService(counting);
+    const ws4 = path.join(root, "incremental-shrink");
+    fs.writeFileSync(
+      jsonlPath,
+      exchange("How does Acme pay us these days?", "Net-30 through Stripe.") +
+        exchange("Who handles the hiring loop?", "The recruiter does."),
+    );
+    index.syncSessions(ws4, [source]);
+    fs.writeFileSync(
+      jsonlPath,
+      exchange("Where is the product hosted?", "On a Hetzner server."),
+    );
+    index.syncSessions(ws4, [source]);
+    expect(index.sessionChunks(ws4, "inc").map((c) => c.body)).toEqual([
+      "User: Where is the product hosted?\nAssistant: On a Hetzner server.",
+    ]);
+    index.close();
+  });
+
+  test("Sessions with a Turn in flight are skipped, not pruned", async () => {
+    const index = new MemoryIndexService(counting);
+    const ws5 = path.join(root, "incremental-skip");
+    fs.writeFileSync(
+      jsonlPath,
+      exchange("How does Acme pay us these days?", "Net-30 through Stripe."),
+    );
+    index.syncSessions(ws5, [source]);
+    fs.appendFileSync(
+      jsonlPath,
+      exchange("Who handles the hiring loop?", "The recruiter does."),
+    );
+    index.syncSessions(ws5, [source], { skip: new Set(["inc"]) });
+    expect(index.sessionChunks(ws5, "inc")).toHaveLength(1);
+    index.syncSessions(ws5, [source]);
+    expect(index.sessionChunks(ws5, "inc")).toHaveLength(2);
+    index.close();
+  });
+});
+
 describe("memory tools", () => {
   const index = new MemoryIndexService(fakeEmbedder("fake-v2"));
   const deps = { index, sync: async () => index.syncKnowledge(ws) };

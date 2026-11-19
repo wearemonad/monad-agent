@@ -122,8 +122,7 @@ import {
   type CodexAuthStrategy,
 } from "./auth/CodexAuth";
 import { OLLAMA_URL, OllamaService } from "./services/OllamaService";
-import { OnnxEmbedder } from "./services/OnnxEmbedder";
-import { MemoryIndexService } from "./services/MemoryIndexService";
+import { MemoryIndex } from "./services/MemoryIndex";
 import {
   GRAPH_BACKFILL_VERSION,
   backfillDue,
@@ -140,7 +139,6 @@ import {
   appendCapture,
   buildReviewPrompt,
   bumpReviewCounter,
-  condenseLastExchange,
   resetReviewCounter,
 } from "./services/memoryCapture";
 import { sessionDelivered, sessionFilePath } from "./services/sessionFiles";
@@ -502,9 +500,20 @@ const drive = new GoogleDriveService(
 );
 
 // In-process embeddings (transformers.js + ONNX) — no external dependency;
-// the model downloads once on first use. See OnnxEmbedder for the fallback story.
-const embedder = new OnnxEmbedder();
-const memoryIndex = new MemoryIndexService(embedder);
+// the model downloads once on first use. See OnnxEmbedder for the fallback
+// story. All of it — indexing, SQLite, embeddings — runs in a Bun Worker
+// (workers/memoryIndex.worker.ts), off the thread that streams Threads.
+const memoryIndex = new MemoryIndex({ embedder: "onnx" });
+
+/** Sessions with an interactive Turn streaming in this workspace: the index
+ *  leaves them alone until the Turn ends (their JSONL is still growing). */
+function activeTurnSessions(workspaceId: string): string[] {
+  const ids: string[] = [];
+  for (const run of interactiveRuns.values())
+    if (run.workspaceId === workspaceId && run.sessionId)
+      ids.push(run.sessionId);
+  return ids;
+}
 
 /** Freshen a workspace's memory index — incremental (mtime-stamped), so it's
  *  cheap when nothing changed. Failures degrade recall, never break callers.
@@ -512,13 +521,10 @@ const memoryIndex = new MemoryIndexService(embedder);
 function syncMemory(workspaceId: string, workspacePath: string): Promise<void> {
   return perf.run("syncMemory", async () => {
     try {
-      memoryIndex.syncKnowledge(workspacePath);
-      memoryIndex.syncSessions(
+      await memoryIndex.sync(
         workspacePath,
         await sessions.listForIndex(workspacePath, workspaceId),
-      );
-      void perf.run("memory:embed", () =>
-        memoryIndex.backfillEmbeddings(workspacePath),
+        activeTurnSessions(workspaceId),
       );
     } catch (e) {
       console.error(`[memory] sync failed: ${(e as Error).message}`);
@@ -828,7 +834,13 @@ const costs = new CostLedger();
  *  promptSnippet identifies the run in the away-from-app done notification. */
 const interactiveRuns = new Map<
   string,
-  { workspaceId: string; workspacePath: string; promptSnippet: string }
+  {
+    workspaceId: string;
+    workspacePath: string;
+    promptSnippet: string;
+    /** Known from the start when resuming; from run-started otherwise. */
+    sessionId?: string;
+  }
 >();
 /** Hidden memory-review runs: their stream never reaches the chat; completion
  *  diffs knowledge/ into the review queue (working-memory edits included). */
@@ -853,12 +865,9 @@ function captureInteractiveRun(
   if (codexThreads.has(ctx.workspacePath, sessionId)) return;
   const capture = async () => {
     try {
-      const jsonl = fs.readFileSync(
+      // Reading the whole JSONL and condensing it happens in the worker.
+      const exchange = await memoryIndex.condenseLastExchange(
         sessionFilePath(ctx.workspacePath, sessionId),
-        "utf8",
-      );
-      const exchange = condenseLastExchange(
-        jsonl,
         new Date().toISOString().slice(0, 10),
       );
       if (exchange) {
@@ -1109,6 +1118,10 @@ function routeAgentEvent(event: AgentStreamEvent): void {
   // ingest, memory-review and scheduled runs are background-owned — their
   // streams become notifications/panel updates instead of bleeding into
   // the open chat
+  if (event.kind === "run-started") {
+    const run = interactiveRuns.get(event.runId);
+    if (run && event.sessionId) run.sessionId = event.sessionId;
+  }
   if (handleIngestEvent(event)) return;
   if (handleMemoryReviewEvent(event)) return;
   if (handleGraphBackfillEvent(event)) return;
@@ -1626,12 +1639,13 @@ async function doHealthChecks(): Promise<HealthIssue[]> {
   // Semantic memory search needs the local embedding model (a one-time
   // download). A failed download — typically an offline first run — degrades
   // search to keyword-only silently, so surface it as a soft warning instead.
-  if (embedder.status === "failed") {
+  const memory = await memoryIndex.status().catch(() => null);
+  if (memory?.embedder === "failed") {
     issues.push({
       workspaceId: "",
       workspaceName: "Memory",
       source: "embeddings",
-      message: `Semantic memory search is inactive — the embedding model download failed (${embedder.lastError.slice(0, 80)}). Keyword search still works; the download retries automatically.`,
+      message: `Semantic memory search is inactive — the embedding model download failed (${memory.lastError.slice(0, 80)}). Keyword search still works; the download retries automatically.`,
     });
   }
   // Local-model mode depends on the Ollama server; a stopped server means
@@ -2951,7 +2965,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           return { ok: false, error: String((e as Error).message ?? e) };
         }
       },
-      knowledgeGraph: ({ workspaceId, includeDocs }) => {
+      knowledgeGraph: async ({ workspaceId, includeDocs }) => {
         const ws = workspaces.get(workspaceId);
         if (!ws)
           return {
@@ -2963,9 +2977,9 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         try {
           // Knowledge only (not sessions/embeddings): incremental and cheap,
           // and all the graph is built from.
-          memoryIndex.syncKnowledge(ws.path);
+          await memoryIndex.sync(ws.path);
           return {
-            ...memoryIndex.graph(ws.path).view({ includeDocs }),
+            ...(await memoryIndex.graph(ws.path)).view({ includeDocs }),
             backfill: backfillStatus(
               readBackfillState(ws.path),
               graphBackfillActiveFor(ws.id),
@@ -3679,7 +3693,11 @@ function rawLoopSpecs(): LoopSpec[] {
 // for real. See createQuitGuard for what this can and can't guarantee.
 const quitGuard = createQuitGuard({
   dispose: async () => {
-    await Promise.all([appRuntime.dispose(), perf.stop()]);
+    await Promise.all([
+      appRuntime.dispose(),
+      perf.stop(),
+      memoryIndex.dispose(),
+    ]);
     if (fakeAgentThreads) {
       for (const ws of workspaces.list()) removeFakeThreads(ws.path);
     }
