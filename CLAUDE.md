@@ -108,3 +108,4 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 
 Hard rules
 - always write plans and documentation as .html files NOT .md files
+- never add "Generated with Claude Code" (or any other Claude Code attribution) to pull request titles or descriptions
