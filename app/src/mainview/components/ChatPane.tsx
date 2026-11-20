@@ -819,7 +819,7 @@ function Messages() {
     setPinned(false);
     void listRef.current?.scrollToIndex({
       index: turn.rowIndex,
-      animated: true,
+      animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
       // Clear of the list's 16px header so the message isn't flush to the top.
       viewOffset: 16,
     });
@@ -840,6 +840,9 @@ function Messages() {
   });
   useLayoutEffect(() => {
     shownThread.current = activeThreadId;
+    // The minimap's range belonged to the old list; the rows effect (one
+    // frame later) reads the new one.
+    visibleRows.reset();
     setPinned(
       (useStore.getState().threads[activeThreadId]?.scrollOffset ?? null) ===
         null,
@@ -849,7 +852,7 @@ function Messages() {
       if (last.threadId === activeThreadId)
         useStore.getState().setScrollOffset(activeThreadId, last.offset);
     };
-  }, [activeThreadId]);
+  }, [activeThreadId, visibleRows]);
 
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;

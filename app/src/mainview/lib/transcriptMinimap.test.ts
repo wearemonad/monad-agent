@@ -4,6 +4,7 @@ import {
   createVisibleRowsStore,
   currentTurn,
   minimapTurns,
+  plainLine,
   previewText,
   tickTopPercent,
   turnAtPointer,
@@ -150,5 +151,33 @@ describe("createVisibleRowsStore", () => {
     store.set(1, 6);
     expect(calls).toBe(2);
     expect(store.get()).toEqual({ start: 1, end: 6 });
+  });
+});
+
+describe("plainLine", () => {
+  test("a user message is plain text: markdown-looking characters stay", () => {
+    expect(plainLine("fix __init__.py please")).toBe("fix __init__.py please");
+    expect(plainLine("# 3 bugs left\n\n1. a\n2. b")).toBe(
+      "# 3 bugs left 1. a 2. b",
+    );
+    expect(plainLine("---")).toBe("---");
+  });
+
+  test("only as much as a preview needs", () => {
+    expect(plainLine("x".repeat(5_000)).length).toBe(1_500);
+  });
+});
+
+describe("visible rows reset", () => {
+  test("a switch forgets the old Thread's range and tells the rail", () => {
+    const store = createVisibleRowsStore();
+    let calls = 0;
+    store.subscribe(() => calls++);
+    store.set(3, 9);
+    store.reset();
+    expect(store.get()).toBeNull();
+    expect(calls).toBe(2);
+    store.reset();
+    expect(calls).toBe(2);
   });
 });

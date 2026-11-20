@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import {
   currentTurn,
   type MinimapTurn,
+  plainLine,
   previewText,
   tickTopPercent,
   turnAtPointer,
@@ -43,7 +44,7 @@ export function TranscriptMinimap({
   const activeIndex = active !== null && active < turns.length ? active : null;
   const activeTurn = activeIndex === null ? null : turns[activeIndex];
   const preview = activeTurn && {
-    user: previewText(activeTurn.user) || "Your message",
+    user: plainLine(activeTurn.user) || "Your message",
     answer: activeTurn.answer ? previewText(activeTurn.answer) : "",
   };
 
@@ -87,17 +88,20 @@ export function TranscriptMinimap({
       >
         <button
           type="button"
-          aria-label={`Jump to message: ${preview?.user ?? previewText(turns[current ?? 0]?.user ?? "")}`}
+          aria-label={`Jump to message: ${preview?.user ?? plainLine(turns[current ?? 0]?.user ?? "")}`}
           className="absolute inset-0 cursor-pointer rounded-sm outline-none before:absolute before:inset-x-0 before:-inset-y-2 focus-visible:ring-2 focus-visible:ring-ring/50"
-          onMouseMove={(e) => setActive(fromPointer(e))}
+          // A text-selection drag passing over the rail isn't pointing at it.
+          onMouseMove={(e) => e.buttons === 0 && setActive(fromPointer(e))}
           onMouseLeave={() => setActive(null)}
           onMouseDown={(e) => e.preventDefault()}
           onFocus={() => setActive((i) => i ?? current ?? 0)}
           onBlur={() => setActive(null)}
           onClick={(e) => {
-            // A pointer click jumps to the tick under it; Enter/Space (a
-            // click with no pointer position) to the one the keys picked.
-            const index = e.detail === 0 ? activeIndex : fromPointer(e);
+            // A pointer click jumps to the tick under it. Enter and Space
+            // are handled in onKeyDown; a click with no pointer (a screen
+            // reader's) takes the picked turn, else the one being read.
+            const index =
+              e.detail === 0 ? (activeIndex ?? current) : fromPointer(e);
             const turn = index === null ? undefined : turns[index];
             if (turn) onJump(turn);
           }}
@@ -115,6 +119,12 @@ export function TranscriptMinimap({
               case "End":
                 setActive(turns.length - 1);
                 break;
+              case "Enter":
+              case " ": {
+                const turn = turns[activeIndex ?? current ?? 0];
+                if (turn) onJump(turn);
+                break;
+              }
               default:
                 return;
             }

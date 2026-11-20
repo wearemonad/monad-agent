@@ -97,6 +97,12 @@ export function currentTurn(
 const PREVIEW_SOURCE_CHARS = 1_500;
 const parser = unified().use(remarkParse).freeze();
 
+/** A user message as one line. It's plain text (the transcript shows it
+ *  pre-wrapped, not rendered), so "__init__.py" or "# 3 bugs" stay as typed. */
+export function plainLine(text: string): string {
+  return text.slice(0, PREVIEW_SOURCE_CHARS).replace(/\s+/g, " ").trim();
+}
+
 /** Markdown as one line of the text it renders: no markup, no link targets.
  *  Top-level blocks are joined with a space (mdast-util-to-string would run
  *  "Plan" and "Ship" together). */
@@ -122,6 +128,12 @@ export function createVisibleRowsStore() {
   const listeners = new Set<() => void>();
   return {
     get: () => value,
+    /** A Thread switch: the old range means nothing in the new list. */
+    reset() {
+      if (value === null) return;
+      value = null;
+      for (const l of listeners) l();
+    },
     set(start: number, end: number) {
       if (value?.start === start && value.end === end) return;
       value = { start, end };
