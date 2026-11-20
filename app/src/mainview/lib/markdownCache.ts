@@ -30,6 +30,12 @@ export function cachedMarkdown(
   return element;
 }
 
+/** Forget every rendered block. Dev harness only: a cold open measures
+ *  the parse, not a cache left warm by earlier visits. */
+export function clearMarkdownCache(): void {
+  cache.clear();
+}
+
 /** The block is cached (and its next render skips the parse). */
 export function isMarkdownCached(text: string): boolean {
   return cache.has(text);

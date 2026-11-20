@@ -15,10 +15,8 @@ import {
  *  that is the newest answers and the stream's finished blocks. The open
  *  Thread is never warmed — it renders (and caches) its own. */
 
-export type WarmupThread = Pick<
-  { items: ChatItem[]; streamingText: string },
-  "items" | "streamingText"
->;
+/** The slice of a Thread (ThreadState) the warm-up reads. */
+export type WarmupThread = { items: ChatItem[]; streamingText: string };
 
 export type WarmupState = {
   activeThreadId: string;

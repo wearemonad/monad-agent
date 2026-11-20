@@ -10,7 +10,11 @@ import type { MessageBlock } from "./transcriptBlocks";
  *    blocks on screen, not a whole 10 000-character message;
  *  - the answer still streaming shows its finished blocks as rows under the
  *    same keys its final item will have, so completion keeps those rows
- *    (and their DOM) instead of building the whole answer again. */
+ *    (and their DOM) instead of building the whole answer again. Answers
+ *    are keyed by their ordinal ("answer-3": the Thread's fourth answer),
+ *    not their item index: a thinking or tool item landing mid-stream
+ *    shifts indices, but no other answer can land before the streaming one
+ *    ends. */
 
 export type Row = {
   /** Unique across Threads: block keys are positions ("item-3"), and the
@@ -62,17 +66,17 @@ function gapAbove(prev: MessageBlock | undefined, block: MessageBlock) {
 }
 
 /** Rows for `blocks`, then the streaming answer's finished blocks
- *  (`streamed`) under `nextKey` — the block key its item will get. Rows from
- *  `prev` are reused wherever nothing about them changed. */
+ *  (`streamed`) under the key its item will get. Rows from `prev` are
+ *  reused wherever nothing about them changed. */
 export function toRows(
   threadId: string,
   blocks: MessageBlock[],
   streamed: string[],
-  nextKey: string,
   prev: Row[],
 ): Row[] {
   const reuse = new Map(prev.map((row) => [row.key, row]));
   const rows: Row[] = [];
+  let answers = 0;
   const pushMarkdown = (
     key: string,
     text: string,
@@ -97,11 +101,12 @@ export function toRows(
     if (block.kind === "item" && block.item.type === "assistant") {
       const item = block.item;
       const parts = blocksOf(item);
+      const answer = `${threadId}:answer-${answers++}`;
       const narration = blocks[i + 1]?.kind === "activity";
       parts.forEach((text, j) => {
         const last = j === parts.length - 1;
         pushMarkdown(
-          `${threadId}:${block.key}:${j}`,
+          `${answer}:${j}`,
           text,
           j === 0 ? gap : 0,
           j > 0,
@@ -122,7 +127,27 @@ export function toRows(
   const before = blocks[blocks.length - 1];
   streamed.forEach((text, j) => {
     const gap = j > 0 || !before ? 0 : 12;
-    pushMarkdown(`${threadId}:${nextKey}:${j}`, text, gap, j > 0, null);
+    pushMarkdown(`${threadId}:answer-${answers}:${j}`, text, gap, j > 0, null);
   });
   return rows;
+}
+
+/** Pools recycled list containers by what they hold. */
+export function rowType(row: Row): string {
+  if (row.kind === "markdown") return "markdown";
+  const b = row.block;
+  return b.kind === "activity"
+    ? "activity"
+    : b.item.type === "user"
+      ? "user"
+      : "card";
+}
+
+/** What search matches in a row: the text people wrote or read. */
+export function searchSource(row: Row): { text: string; markdown: boolean } {
+  if (row.kind === "markdown") return { text: row.text, markdown: true };
+  const b = row.block;
+  return b.kind === "item" && b.item.type === "user"
+    ? { text: b.item.text, markdown: false }
+    : { text: "", markdown: false };
 }

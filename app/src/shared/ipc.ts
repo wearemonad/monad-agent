@@ -796,7 +796,8 @@ export type MonadRPC = {
           idleThreads: HarnessThread[];
           stress?: { durationMs: number; everyMs: number };
           /** The idle Threads are fake (MONAD_FAKE_IDLE): drop each from
-           *  memory before opening it, so every idle click is a cold open. */
+           *  memory, and empty the render cache, before opening it — so
+           *  every idle click is a cold open. */
           coldIdle?: boolean;
         };
       };

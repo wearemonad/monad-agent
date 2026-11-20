@@ -23,9 +23,11 @@ export type BlockSplit = {
 };
 
 export function splitMarkdownBlocks(text: string): string[] {
-  if (DEFINITION.test(text)) return text.trim() === "" ? [] : [text];
-  return scan(text).blocks;
+  return DEFINITION.test(text) ? wholeText(text) : scan(text).blocks;
 }
+
+/** The text as one block (it has link or footnote definitions). */
+const wholeText = (text: string) => (text.trim() === "" ? [] : [text]);
 
 /** Split `text`, a continuation of `prev.text` (a growing stream), by
  *  rescanning only from its first non-stable block — so each update costs
@@ -37,12 +39,7 @@ export function splitStreaming(text: string, prev?: BlockSplit): BlockSplit {
     DEFINITION.test(text.slice(prev.resumeAt))
   ) {
     if (DEFINITION.test(text))
-      return {
-        text,
-        blocks: text.trim() === "" ? [] : [text],
-        stable: 0,
-        resumeAt: 0,
-      };
+      return { text, blocks: wholeText(text), stable: 0, resumeAt: 0 };
     return { text, ...scan(text) };
   }
   const tail = scan(text.slice(prev.resumeAt));

@@ -36,11 +36,12 @@ export function nextReveal(
 }
 
 /** The streamed `target` string, revealed progressively. Resets when the
- *  stream ends (empty target) or restarts. Runs one rAF loop only while
- *  there's something left to reveal. */
+ *  stream ends (empty target) or restarts. Text already there at mount (a
+ *  Thread opened mid-stream) shows at once — only what arrives after types.
+ *  Runs one rAF loop only while there's something left to reveal. */
 export function useSmoothText(target: string): string {
-  const [shownLength, setShownLength] = useState(0);
-  const positionRef = useRef(0);
+  const [shownLength, setShownLength] = useState(() => target.length);
+  const positionRef = useRef(target.length);
   const lastFrameRef = useRef<number | null>(null);
   const lastCommitRef = useRef(0);
 

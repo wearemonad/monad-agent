@@ -64,11 +64,14 @@ const QUESTIONS = [
   "Which customers are up for renewal in January?",
 ];
 
+/** Every block names its Thread and turn, so no two answers share a block
+ *  — a shared one would hit the render cache and flatter cold opens. */
 function answer(i: number, turn: number): string {
+  const at = `(Thread ${i + 1}, turn ${turn + 1})`;
   return [
     `### Thread ${i + 1}, answer ${turn + 1}`,
     "",
-    "Revenue grew while support load grew faster. The table has the detail:",
+    `Revenue grew while support load grew faster ${at}. The table has the detail:`,
     "",
     "| Metric | Before | After |",
     "| ------ | ------ | ----- |",
@@ -76,10 +79,10 @@ function answer(i: number, turn: number): string {
     "| Tickets | 3 400 | 4 100 |",
     "",
     "```sql",
-    "select account, renewal_date from contracts where renewal_date < '2027-02-01';",
+    `select account, renewal_date from contracts where renewal_date < '2027-02-01'; -- ${at}`,
     "```",
     "",
-    "- Hire before January.",
+    `- Hire before January ${at}.`,
     "- Move the FAQ into the help centre.",
   ].join("\n");
 }

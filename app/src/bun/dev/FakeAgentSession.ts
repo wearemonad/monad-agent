@@ -168,7 +168,7 @@ function section(step: number, part = 0): string {
   return [
     `## Step ${n}${part ? `.${part}` : ""}: what the numbers say`,
     "",
-    `Here is the breakdown for pass ${n}. Revenue is up across the board, but **support load** grew faster than headcount, which is the thing to watch next quarter.`,
+    `Here is the breakdown for pass ${n}${part ? `, section ${part}` : ""}. Revenue is up across the board, but **support load** grew faster than headcount, which is the thing to watch next quarter.`,
     "",
     "| Area | Q2 | Q3 | Change |",
     "| ---- | -- | -- | ------ |",
@@ -185,6 +185,6 @@ function section(step: number, part = 0): string {
     "",
     "- Hire one more support engineer before the January renewals.",
     "- Move the onboarding FAQ into the help centre to deflect tickets.",
-    `- Re-run this comparison after the ${n % 2 ? "board" : "team"} meeting.`,
+    `- Re-run this comparison after the ${n % 2 ? "board" : "team"} meeting${part ? ` (part ${part})` : ""}.`,
   ].join("\n");
 }

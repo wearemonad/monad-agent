@@ -11,6 +11,7 @@ import { choiceKey, controlsFor, resolveRunOptions } from "./lib/models";
 import { bytesToBase64 } from "./util";
 import { forwardConsole } from "./lib/consoleForward";
 import { zoomIn, zoomOut, zoomReset } from "./lib/zoom";
+import { clearMarkdownCache } from "./lib/markdownCache";
 import { perf } from "./lib/perf";
 import { createMessageHandlers } from "./messageHandlers";
 
@@ -760,8 +761,10 @@ async function runDevHarness(): Promise<void> {
     harness.coldIdle ? idleThreads.map((t) => t.sessionId) : [],
   );
   const open = async (t: HarnessThread) => {
-    if (cold.has(t.sessionId))
+    if (cold.has(t.sessionId)) {
       useStore.getState().dropThreadForSession(t.sessionId);
+      clearMarkdownCache();
+    }
     perf.markClick("thread", t.sessionId, t.workspaceId);
     await api.openThread(t.workspaceId, t.sessionId);
   };

@@ -44,7 +44,7 @@ import { perf } from "../lib/perf";
 import { useSmoothText } from "../lib/smoothText";
 import { ActivityGroup } from "./ToolCallCard";
 import { toBlocks, type MessageBlock } from "../transcriptBlocks";
-import { type Row, toRows } from "../transcriptRows";
+import { type Row, rowType, searchSource, toRows } from "../transcriptRows";
 import { ARTIFACT_ICONS } from "./ArtifactPanel";
 import { EmailDraftCard } from "./EmailDraftCard";
 import { PermissionCards } from "./PermissionCards";
@@ -59,7 +59,6 @@ import {
 import {
   findSearchMatches,
   SEARCH_HIT_CLASS,
-  type SearchSource,
   splitHits,
 } from "../lib/searchHighlight";
 import { bytesToBase64, fmtTokens } from "../util";
@@ -631,10 +630,6 @@ function TranscriptSkeleton() {
   );
 }
 
-/** The list's footer: everything still being generated. It subscribes to
- *  the stream itself, so the ~30 Hz typewriter re-renders only this, never
- *  the list. The complete item replaces the streamed text (the store clears
- *  the buffer), so the two never show together. */
 /** The streaming answer's finished blocks, published by StreamingFooter
  *  (which owns the typewriter) for Messages to show as list rows. Only the
  *  open block stays in the footer: the footer is re-laid out on every
@@ -646,6 +641,9 @@ const useStreamedBlocks = create<{ threadId: string | null; blocks: string[] }>(
 );
 
 const PROSE = "max-w-[90%] prose prose-sm prose-pre:bg-background";
+/** An answer's block, alone in its own element: flow-root keeps a kept top
+ *  margin (KeepTopMargin) inside the element the list measures. */
+const PROSE_BLOCK = `${PROSE} flow-root`;
 
 /** The list's footer: everything still being generated. It subscribes to
  *  the stream itself, so the ~30 Hz typewriter re-renders only this, never
@@ -701,7 +699,7 @@ const StreamingFooter = memo(function StreamingFooter() {
       {openText && (
         // Below finished rows it continues them (see StreamedRow); alone, it
         // starts a message.
-        <div className={cn(PROSE, split.stable === 0 && "mt-3")}>
+        <div className={cn(PROSE_BLOCK, split.stable === 0 && "mt-3")}>
           {split.stable > 0 && <KeepTopMargin />}
           <MarkdownBlocks text={openText} streaming />
         </div>
@@ -720,35 +718,15 @@ const StreamingFooter = memo(function StreamingFooter() {
   );
 });
 
-/** Prose drops the first child's top margin. A streamed block that
- *  continues the answer needs it: in one container, it would be the gap
- *  from the block above (sibling margins collapse to the larger, and the
- *  lower block's top margin is the larger for every block type prose
- *  styles). A hidden first child keeps the real one from being first. */
+/** Prose drops the first child's top margin. A block that continues an
+ *  answer needs it: in one container it would be the gap from the block
+ *  above (sibling margins collapse to the larger, and the lower block's top
+ *  margin is the larger in nearly every pairing prose styles — a paragraph
+ *  under a code block sits a few px closer than it would in one parse). A
+ *  hidden first child keeps the real one from being first. */
 function KeepTopMargin() {
   return <span hidden />;
 }
-
-const NOTHING_TO_SEARCH: SearchSource = { text: "", markdown: false };
-
-/** What search matches in a row: the text people wrote or read. */
-function searchSource(row: Row): SearchSource {
-  if (row.kind === "markdown") return { text: row.text, markdown: true };
-  const b = row.block;
-  return b.kind === "item" && b.item.type === "user"
-    ? { text: b.item.text, markdown: false }
-    : NOTHING_TO_SEARCH;
-}
-
-/** Pools recycled list containers by what they hold. */
-const rowType = (row: Row) =>
-  row.kind === "markdown"
-    ? "markdown"
-    : row.block.kind === "activity"
-      ? "activity"
-      : row.block.item.type === "user"
-        ? "user"
-        : "card";
 
 function renderRow({ item: row }: LegendListRenderItemProps<Row>) {
   return (
@@ -759,7 +737,7 @@ function renderRow({ item: row }: LegendListRenderItemProps<Row>) {
         <TranscriptBlock block={row.block} />
       ) : (
         <div className="flex flex-col gap-0.5">
-          <div className={PROSE}>
+          <div className={PROSE_BLOCK}>
             {row.continues && <KeepTopMargin />}
             <MarkdownBlocks text={row.text} />
           </div>
@@ -788,8 +766,11 @@ function Messages() {
   // unchanged, so only the growing block re-renders (TranscriptBlock memo).
   const prevBlocks = useRef<MessageBlock[]>([]);
   const prevRows = useRef<Row[]>([]);
+  // Ignored once the stream is gone: the store clears it in the same update
+  // that adds the final item, before the footer's effect clears these.
+  const streaming = useActiveThread((t) => t.streamingText !== "");
   const streamed = useStreamedBlocks((s) =>
-    s.threadId === activeThreadId ? s.blocks : NO_STREAMED,
+    streaming && s.threadId === activeThreadId ? s.blocks : NO_STREAMED,
   );
   const rows = useMemo(() => {
     prevBlocks.current = toBlocks(items, prevBlocks.current);
@@ -797,8 +778,6 @@ function Messages() {
       activeThreadId,
       prevBlocks.current,
       streamed,
-      // The key the streaming answer's item will get, so its rows survive.
-      `item-${items.length}`,
       prevRows.current,
     );
     return prevRows.current;
@@ -967,7 +946,8 @@ function Messages() {
           maintainScrollAtEnd
           onScroll={onScroll}
           ListHeaderComponent={<div className="h-4" />}
-          ListFooterComponent={<StreamingFooter />}
+          // Keyed by Thread: each Thread's stream starts its own reveal.
+          ListFooterComponent={<StreamingFooter key={activeThreadId} />}
           // Gutter reserved on both edges (see SettingsPage): a Thread growing
           // long enough to scroll doesn't shift the transcript sideways, and
           // the column stays centered over the composer.

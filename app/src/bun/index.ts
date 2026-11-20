@@ -243,11 +243,11 @@ const foreground = new ForegroundGate({
 const fakeAgentThreads = isDevBuild
   ? Math.max(0, Number(process.env.MONAD_FAKE_AGENT) || 0)
   : 0;
-const envCount = (name: string) =>
+const envNumber = (name: string) =>
   isDevBuild ? Math.max(0, Number(process.env[name]) || 0) : 0;
-const fakeMessages = envCount("MONAD_FAKE_MESSAGES") || 40;
-const fakeAnswerChars = envCount("MONAD_FAKE_ANSWER_CHARS");
-const fakeIdleThreads = envCount("MONAD_FAKE_IDLE");
+const fakeMessages = envNumber("MONAD_FAKE_MESSAGES") || 40;
+const fakeAnswerChars = envNumber("MONAD_FAKE_ANSWER_CHARS");
+const fakeIdleThreads = envNumber("MONAD_FAKE_IDLE");
 const perfStressMs = isDevBuild
   ? Math.max(0, Number(process.env.MONAD_PERF_STRESS) || 0) * 1000
   : 0;
@@ -3271,9 +3271,9 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           );
         });
         const idleThreads: HarnessThread[] = [];
-        // Fake idle Threads (numbered after the streaming ones) stand in
-        // for the largest real ones, at a known size.
         if (fakeIdleThreads) {
+          // Fake idle Threads (numbered after the streaming ones) stand in
+          // for the largest real ones, at a known size.
           const indices = Array.from(
             { length: fakeIdleThreads },
             (_, k) => fakeAgentThreads + k,
@@ -3285,14 +3285,15 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
             fakeMessages,
           ))
             idleThreads.push({ workspaceId: home.id, sessionId });
-        }
-        for (const ws of fakeIdleThreads ? [] : workspaces.list()) {
-          const listed = await sessions.list(ws.path, ws.id);
-          const real = listed
-            .map((s) => s.sessionId)
-            .filter((id) => !isFakeSessionId(id));
-          for (const t of largestSessions(ws.path, real.slice(0, 50), 3)) {
-            idleThreads.push({ workspaceId: ws.id, sessionId: t.sessionId });
+        } else {
+          for (const ws of workspaces.list()) {
+            const listed = await sessions.list(ws.path, ws.id);
+            const real = listed
+              .map((s) => s.sessionId)
+              .filter((id) => !isFakeSessionId(id));
+            for (const t of largestSessions(ws.path, real.slice(0, 50), 3)) {
+              idleThreads.push({ workspaceId: ws.id, sessionId: t.sessionId });
+            }
           }
         }
         console.info(
@@ -3306,7 +3307,7 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
             ? {
                 stress: {
                   durationMs: perfStressMs,
-                  everyMs: envCount("MONAD_PERF_CLICK_MS") || 2_000,
+                  everyMs: envNumber("MONAD_PERF_CLICK_MS") || 2_000,
                 },
               }
             : {}),
