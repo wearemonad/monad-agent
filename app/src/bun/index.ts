@@ -18,6 +18,7 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AgentStreamEvent,
   BackgroundRunInfo,
+  HarnessThread,
   HealthIssue,
   IngestOutcome,
   IngestStatus,
@@ -232,9 +233,21 @@ const foreground = new ForegroundGate({
 // Threads (~40 messages each) and serves interactive runs with a
 // FakeAgentSession; MONAD_PERF_STRESS=<seconds> also has the webview click
 // between Threads and Settings for that long (bun run perf:stress).
+// Sizing knobs for the PR 5 targets (PARALLEL-THREADS-PR5-RENDERING.html):
+// MONAD_FAKE_MESSAGES=<n> seeds n messages per fake Thread, and
+// MONAD_FAKE_ANSWER_CHARS=<n> pads each streamed answer to n characters.
+// MONAD_FAKE_IDLE=<n> adds n non-streaming fake Threads as the "idle"
+// targets, dropped from webview memory before each click (cold opens).
+// MONAD_PERF_CLICK_MS=<ms> spaces the stress clicks (default 2 000); longer
+// than the run, it measures streaming alone.
 const fakeAgentThreads = isDevBuild
   ? Math.max(0, Number(process.env.MONAD_FAKE_AGENT) || 0)
   : 0;
+const envCount = (name: string) =>
+  isDevBuild ? Math.max(0, Number(process.env[name]) || 0) : 0;
+const fakeMessages = envCount("MONAD_FAKE_MESSAGES") || 40;
+const fakeAnswerChars = envCount("MONAD_FAKE_ANSWER_CHARS");
+const fakeIdleThreads = envCount("MONAD_FAKE_IDLE");
 const perfStressMs = isDevBuild
   ? Math.max(0, Number(process.env.MONAD_PERF_STRESS) || 0) * 1000
   : 0;
@@ -1252,6 +1265,7 @@ const agent = new AgentService(
     ...(fakeAgentThreads
       ? {
           fake: {
+            answerChars: fakeAnswerChars,
             onStep: (workspaceId, workspacePath, sessionId, answer) =>
               appendFakeTurn(workspacePath, workspaceId, sessionId, answer),
           },
@@ -3249,13 +3263,30 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           for (let i = w; i < fakeAgentThreads; i += spread.length) {
             indices.push(i);
           }
-          return seedFakeThreads(ws.path, ws.id, indices).map((sessionId) => ({
-            workspaceId: ws.id,
-            sessionId,
-          }));
+          return seedFakeThreads(ws.path, ws.id, indices, fakeMessages).map(
+            (sessionId) => ({
+              workspaceId: ws.id,
+              sessionId,
+            }),
+          );
         });
-        const idleThreads = [];
-        for (const ws of workspaces.list()) {
+        const idleThreads: HarnessThread[] = [];
+        // Fake idle Threads (numbered after the streaming ones) stand in
+        // for the largest real ones, at a known size.
+        if (fakeIdleThreads) {
+          const indices = Array.from(
+            { length: fakeIdleThreads },
+            (_, k) => fakeAgentThreads + k,
+          );
+          for (const sessionId of seedFakeThreads(
+            home.path,
+            home.id,
+            indices,
+            fakeMessages,
+          ))
+            idleThreads.push({ workspaceId: home.id, sessionId });
+        }
+        for (const ws of fakeIdleThreads ? [] : workspaces.list()) {
           const listed = await sessions.list(ws.path, ws.id);
           const real = listed
             .map((s) => s.sessionId)
@@ -3272,8 +3303,14 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
           fakeThreads,
           idleThreads,
           ...(perfStressMs
-            ? { stress: { durationMs: perfStressMs, everyMs: 2_000 } }
+            ? {
+                stress: {
+                  durationMs: perfStressMs,
+                  everyMs: envCount("MONAD_PERF_CLICK_MS") || 2_000,
+                },
+              }
             : {}),
+          ...(fakeIdleThreads ? { coldIdle: true } : {}),
         };
       },
       perfStressDone: () => {

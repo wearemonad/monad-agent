@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { splitMarkdownBlocks } from "./markdownBlocks";
+import {
+  type BlockSplit,
+  splitMarkdownBlocks,
+  splitStreaming,
+} from "./markdownBlocks";
 
 describe("splitMarkdownBlocks", () => {
   test("splits paragraphs at blank lines", () => {
@@ -90,6 +94,64 @@ describe("splitMarkdownBlocks", () => {
     expect(splitMarkdownBlocks("A.\n\n```\ncode\n\nmore")).toEqual([
       "A.",
       "```\ncode\n\nmore",
+    ]);
+  });
+});
+
+/** A document with every construct the splitter cares about, including a
+ *  list item ("1. b") whose first character alone ("1") isn't one yet. */
+const DOC = [
+  "## Plan",
+  "",
+  "Intro paragraph with **bold**.",
+  "",
+  "- a",
+  "",
+  "1. b",
+  "",
+  "   continued",
+  "",
+  "```ts",
+  "const x = 1;",
+  "",
+  "```",
+  "",
+  "| a | b |",
+  "| - | - |",
+  "| 1 | 2 |",
+  "",
+  "Closing line.",
+].join("\n");
+
+describe("splitStreaming", () => {
+  test("after every streamed prefix, matches a full split of it", () => {
+    let prev: BlockSplit | undefined;
+    for (let n = 0; n <= DOC.length; n++) {
+      const text = DOC.slice(0, n);
+      prev = splitStreaming(text, prev);
+      expect(prev.blocks).toEqual(splitMarkdownBlocks(text));
+    }
+  });
+
+  test("in bigger steps too, as a stream batch delivers them", () => {
+    let prev: BlockSplit | undefined;
+    for (let n = 0; n <= DOC.length; n += 7) {
+      prev = splitStreaming(DOC.slice(0, n), prev);
+      expect(prev.blocks).toEqual(splitMarkdownBlocks(DOC.slice(0, n)));
+    }
+  });
+
+  test("a definition arriving late merges everything, like a full split", () => {
+    const first = splitStreaming("See [docs][d].\n\nMore.");
+    const text = "See [docs][d].\n\nMore.\n\n[d]: https://x.dev";
+    expect(splitStreaming(text, first).blocks).toEqual([text]);
+  });
+
+  test("text that doesn't extend the previous one starts over", () => {
+    const first = splitStreaming("One.\n\nTwo.");
+    expect(splitStreaming("Other.\n\nText.", first).blocks).toEqual([
+      "Other.",
+      "Text.",
     ]);
   });
 });

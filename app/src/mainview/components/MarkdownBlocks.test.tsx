@@ -4,13 +4,17 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
   MarkdownBlocks as MarkdownBlocksT,
+  prewarmBlocks as PrewarmBlocksT,
   SearchHighlight as SearchHighlightT,
 } from "./MarkdownBlocks";
+import type { isMarkdownCached as IsMarkdownCachedT } from "../lib/markdownCache";
 
 /** Block-split markdown (PARALLEL-THREADS-PR5-RENDERING.html §5b, §5c). */
 
 let MarkdownBlocks: typeof MarkdownBlocksT;
 let SearchHighlight: typeof SearchHighlightT;
+let prewarmBlocks: typeof PrewarmBlocksT;
+let isMarkdownCached: typeof IsMarkdownCachedT;
 
 beforeAll(async () => {
   const mem = new Map<string, string>();
@@ -22,7 +26,10 @@ beforeAll(async () => {
   // The real RPC module needs the Electrobun webview's `window`; rendering
   // never calls it (links only open on click).
   mock.module("../rpc", () => ({ api: {} }));
-  ({ MarkdownBlocks, SearchHighlight } = await import("./MarkdownBlocks"));
+  ({ MarkdownBlocks, SearchHighlight, prewarmBlocks } = await import(
+    "./MarkdownBlocks"
+  ));
+  ({ isMarkdownCached } = await import("../lib/markdownCache"));
   ({ useStore } = await import("../store"));
 });
 
@@ -107,5 +114,14 @@ describe("MarkdownBlocks", () => {
     );
     expect(html).toContain('title="Open knowledge/plan.md"');
     expect(html).toContain('<mark class="search-hit">plan</mark>.md</button>');
+  });
+
+  test("prewarmed blocks land in the render cache, off the caller's turn", async () => {
+    const blocks = ["Warm *one*.", "Warm `two`.", "| a |\n| - |\n| 3 |"];
+    const drained = prewarmBlocks(blocks);
+    // Nothing is parsed synchronously: the caller (a store update) returns at once.
+    expect(blocks.some(isMarkdownCached)).toBe(false);
+    await drained;
+    expect(blocks.every(isMarkdownCached)).toBe(true);
   });
 });

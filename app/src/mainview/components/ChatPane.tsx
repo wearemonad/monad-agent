@@ -44,13 +44,22 @@ import { perf } from "../lib/perf";
 import { useSmoothText } from "../lib/smoothText";
 import { ActivityGroup } from "./ToolCallCard";
 import { toBlocks, type MessageBlock } from "../transcriptBlocks";
+import { type Row, toRows } from "../transcriptRows";
 import { ARTIFACT_ICONS } from "./ArtifactPanel";
 import { EmailDraftCard } from "./EmailDraftCard";
 import { PermissionCards } from "./PermissionCards";
-import { MarkdownBlocks, SearchHighlight } from "./MarkdownBlocks";
+import { create } from "zustand";
+import { BackgroundWarmup } from "../lib/backgroundWarmup";
+import { type BlockSplit, splitStreaming } from "../lib/markdownBlocks";
+import {
+  MarkdownBlocks,
+  prewarmBlocks,
+  SearchHighlight,
+} from "./MarkdownBlocks";
 import {
   findSearchMatches,
   SEARCH_HIT_CLASS,
+  type SearchSource,
   splitHits,
 } from "../lib/searchHighlight";
 import { bytesToBase64, fmtTokens } from "../util";
@@ -484,12 +493,8 @@ function GeneratedImage({ path, name }: { path: string; name: string }) {
  *  the shallow compare bails everywhere except the block that changed. */
 const TranscriptBlock = memo(function TranscriptBlock({
   block,
-  interstitial,
 }: {
   block: MessageBlock;
-  /** Assistant text right before a tool-call group is in-run narration
-   *  ("I'll gather…"), not an answer — no Remember button there. */
-  interstitial: boolean;
 }) {
   if (block.kind === "activity") {
     return <ActivityGroup entries={block.entries} />;
@@ -506,14 +511,9 @@ const TranscriptBlock = memo(function TranscriptBlock({
         </div>
       );
     case "assistant":
-      return (
-        <div className="group flex flex-col gap-0.5">
-          <div className="max-w-[90%] prose prose-sm prose-pre:bg-background">
-            <MarkdownBlocks text={item.text} />
-          </div>
-          {!interstitial && <RememberButton text={item.text} align="start" />}
-        </div>
-      );
+      // Answers are list rows of their own, one per markdown block (see
+      // transcriptRows.ts); they never reach this component.
+      return null;
     case "email-draft":
       return <EmailDraftCard draft={item.draft} />;
     case "image":
@@ -635,13 +635,51 @@ function TranscriptSkeleton() {
  *  the stream itself, so the ~30 Hz typewriter re-renders only this, never
  *  the list. The complete item replaces the streamed text (the store clears
  *  the buffer), so the two never show together. */
+/** The streaming answer's finished blocks, published by StreamingFooter
+ *  (which owns the typewriter) for Messages to show as list rows. Only the
+ *  open block stays in the footer: the footer is re-laid out on every
+ *  reveal tick, and with the whole answer in it that layout grew with the
+ *  answer's length — over 100 ms per tick near 10 000 characters. List rows
+ *  are positioned once and left alone. */
+const useStreamedBlocks = create<{ threadId: string | null; blocks: string[] }>(
+  () => ({ threadId: null, blocks: [] }),
+);
+
+const PROSE = "max-w-[90%] prose prose-sm prose-pre:bg-background";
+
+/** The list's footer: everything still being generated. It subscribes to
+ *  the stream itself, so the ~30 Hz typewriter re-renders only this, never
+ *  the list. The complete item replaces the streamed text (the store clears
+ *  the buffer), so the two never show together. */
 const StreamingFooter = memo(function StreamingFooter() {
+  const activeThreadId = useStore((s) => s.activeThreadId);
   const streamingText = useActiveThread((t) => t.streamingText);
   const streamingThinking = useActiveThread((t) => t.streamingThinking);
-  // Typewriter smoothing over the whole buffer: the reveal is a slice, and
-  // MarkdownBlocks re-parses only the block it lands in. (Thinking stays
-  // unsmoothed — its sliding-window ticker isn't append-only.)
+  // Typewriter smoothing: one reveal cursor over the buffer, so a block
+  // that completes mid-reveal keeps typing instead of snapping in. (Thinking
+  // stays unsmoothed — its sliding-window ticker isn't append-only.)
   const displayedText = useSmoothText(streamingText);
+  // The revealed text only grows, so the split resumes from its open block.
+  const lastSplit = useRef<BlockSplit | undefined>(undefined);
+  const split = useMemo(() => {
+    lastSplit.current = splitStreaming(displayedText, lastSplit.current);
+    return lastSplit.current;
+  }, [displayedText]);
+  // Hand the finished blocks to the list before paint, so a block never
+  // shows twice or not at all between the footer and its row.
+  useLayoutEffect(() => {
+    const shown = useStreamedBlocks.getState();
+    if (
+      shown.threadId !== activeThreadId ||
+      shown.blocks.length !== split.stable
+    )
+      useStreamedBlocks.setState({
+        threadId: activeThreadId,
+        blocks: split.blocks.slice(0, split.stable),
+      });
+  }, [activeThreadId, split]);
+  const openText =
+    split.stable > 0 ? displayedText.slice(split.resumeAt) : displayedText;
   const runState = useActiveThread((t) => t.runState);
   const last = useActiveThread((t) => t.items[t.items.length - 1]);
   // Only this thread's pending cards count — a parallel thread's permission
@@ -660,9 +698,12 @@ const StreamingFooter = memo(function StreamingFooter() {
           {streamingThinking.slice(-600)}
         </div>
       )}
-      {displayedText && (
-        <div className="mt-3 max-w-[90%] prose prose-sm prose-pre:bg-background">
-          <MarkdownBlocks text={displayedText} streaming />
+      {openText && (
+        // Below finished rows it continues them (see StreamedRow); alone, it
+        // starts a message.
+        <div className={cn(PROSE, split.stable === 0 && "mt-3")}>
+          {split.stable > 0 && <KeepTopMargin />}
+          <MarkdownBlocks text={openText} streaming />
         </div>
       )}
       <div className="not-empty:mt-3">
@@ -679,68 +720,52 @@ const StreamingFooter = memo(function StreamingFooter() {
   );
 });
 
-type RowType = "user" | "assistant" | "activity" | "card";
-
-/** One list row: a transcript block plus what it needs from its
- *  neighbours. Rows are reused while nothing about them changes, so the list
- *  re-renders only rows that did. */
-type Row = {
-  /** Unique across Threads: block keys are positions ("item-3"), and the
-   *  one list shows every Thread — a shared key would carry one Thread's
-   *  measured height and component state into another's row. */
-  key: string;
-  block: MessageBlock;
-  type: RowType;
-  /** Space above, in px. List items are positioned one by one, so the old
-   *  sibling margins (tight activity lines, air at the seams) are explicit. */
-  gap: number;
-  /** Assistant text right before a tool-call group is narration. */
-  interstitial: boolean;
-};
-
-const rowType = (b: MessageBlock): RowType =>
-  b.kind === "activity"
-    ? "activity"
-    : b.item.type === "user" || b.item.type === "assistant"
-      ? b.item.type
-      : "card";
-
-function gapAbove(prev: MessageBlock | undefined, block: MessageBlock) {
-  if (!prev) return 0;
-  const lineAbove = prev.kind === "activity";
-  const line = block.kind === "activity";
-  if (line) return lineAbove ? 0 : 16;
-  return 12;
+/** Prose drops the first child's top margin. A streamed block that
+ *  continues the answer needs it: in one container, it would be the gap
+ *  from the block above (sibling margins collapse to the larger, and the
+ *  lower block's top margin is the larger for every block type prose
+ *  styles). A hidden first child keeps the real one from being first. */
+function KeepTopMargin() {
+  return <span hidden />;
 }
 
-function toRows(threadId: string, blocks: MessageBlock[], prev: Row[]): Row[] {
-  return blocks.map((block, i) => {
-    const key = `${threadId}:${block.key}`;
-    const gap = gapAbove(blocks[i - 1], block);
-    const interstitial = blocks[i + 1]?.kind === "activity";
-    const old = prev[i];
-    return old &&
-      old.key === key &&
-      old.block === block &&
-      old.gap === gap &&
-      old.interstitial === interstitial
-      ? old
-      : { key, block, type: rowType(block), gap, interstitial };
-  });
+const NOTHING_TO_SEARCH: SearchSource = { text: "", markdown: false };
+
+/** What search matches in a row: the text people wrote or read. */
+function searchSource(row: Row): SearchSource {
+  if (row.kind === "markdown") return { text: row.text, markdown: true };
+  const b = row.block;
+  return b.kind === "item" && b.item.type === "user"
+    ? { text: b.item.text, markdown: false }
+    : NOTHING_TO_SEARCH;
 }
 
-/** What search matches in a block: the text people wrote or read. */
-const searchableText = (b: MessageBlock) =>
-  b.kind === "item" && (b.item.type === "user" || b.item.type === "assistant")
-    ? b.item.text
-    : "";
+/** Pools recycled list containers by what they hold. */
+const rowType = (row: Row) =>
+  row.kind === "markdown"
+    ? "markdown"
+    : row.block.kind === "activity"
+      ? "activity"
+      : row.block.item.type === "user"
+        ? "user"
+        : "card";
 
 function renderRow({ item: row }: LegendListRenderItemProps<Row>) {
   return (
-    // Keyed by block: list containers are recycled, and a block's own state
+    // Keyed by row: list containers are recycled, and a block's own state
     // (an open activity group, a loaded image) must not follow its container.
     <div key={row.key} className={COLUMN} style={{ paddingTop: row.gap }}>
-      <TranscriptBlock block={row.block} interstitial={row.interstitial} />
+      {row.kind === "block" ? (
+        <TranscriptBlock block={row.block} />
+      ) : (
+        <div className="flex flex-col gap-0.5">
+          <div className={PROSE}>
+            {row.continues && <KeepTopMargin />}
+            <MarkdownBlocks text={row.text} />
+          </div>
+          {row.remember && <RememberButton text={row.remember} align="start" />}
+        </div>
+      )}
     </div>
   );
 }
@@ -748,6 +773,7 @@ function renderRow({ item: row }: LegendListRenderItemProps<Row>) {
 /** Within this many px of the end counts as "at the end". */
 const AT_END_PX = 80;
 const NO_NEEDLES: readonly string[] = [];
+const NO_STREAMED: string[] = [];
 
 function Messages() {
   const items = useActiveThread((t) => t.items);
@@ -762,15 +788,32 @@ function Messages() {
   // unchanged, so only the growing block re-renders (TranscriptBlock memo).
   const prevBlocks = useRef<MessageBlock[]>([]);
   const prevRows = useRef<Row[]>([]);
+  const streamed = useStreamedBlocks((s) =>
+    s.threadId === activeThreadId ? s.blocks : NO_STREAMED,
+  );
   const rows = useMemo(() => {
     prevBlocks.current = toBlocks(items, prevBlocks.current);
     prevRows.current = toRows(
       activeThreadId,
       prevBlocks.current,
+      streamed,
+      // The key the streaming answer's item will get, so its rows survive.
+      `item-${items.length}`,
       prevRows.current,
     );
     return prevRows.current;
-  }, [items, activeThreadId]);
+  }, [items, activeThreadId, streamed]);
+
+  // Background Threads keep streaming with nothing rendering them; their new
+  // answers are parsed into the render cache as they arrive, in small
+  // slices, so a revisit doesn't parse them on the click.
+  useEffect(() => {
+    const warmup = new BackgroundWarmup();
+    const warm = (s: ReturnType<typeof useStore.getState>) =>
+      void prewarmBlocks(warmup.update(s));
+    warm(useStore.getState());
+    return useStore.subscribe(warm);
+  }, []);
 
   // At the end of the transcript: drives the scroll-to-end pill. Following
   // the stream is maintainScrollAtEnd's job, and it follows only from here.
@@ -834,11 +877,7 @@ function Messages() {
   const setHighlightTerm = useStore((s) => s.setHighlightTerm);
   const sessionId = useActiveThread((t) => t.resumeSessionId);
   const matches = useMemo(
-    () =>
-      findSearchMatches(
-        rows.map((r) => searchableText(r.block)),
-        highlightTerm,
-      ),
+    () => findSearchMatches(rows.map(searchSource), highlightTerm),
     [rows, highlightTerm],
   );
   // Stable across streaming updates, or every visible block would re-render.
@@ -919,10 +958,10 @@ function Messages() {
           keyExtractor={(row) => row.key}
           initialScrollAtEnd={savedOffset === null}
           initialScrollOffset={savedOffset ?? undefined}
-          getItemType={(row) => row.type}
+          getItemType={rowType}
           renderItem={renderRow}
           recycleItems
-          estimatedItemSize={96}
+          estimatedItemSize={48}
           // Follows the stream (and late heights: images, mermaid, an
           // expanding tool group) only while the view is at the end.
           maintainScrollAtEnd

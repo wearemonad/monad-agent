@@ -8,12 +8,17 @@ import {
   type ReactNode,
   useContext,
   useMemo,
+  useRef,
 } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useStore } from "../store";
-import { cachedMarkdown } from "../lib/markdownCache";
-import { splitMarkdownBlocks } from "../lib/markdownBlocks";
+import { cachedMarkdown, isMarkdownCached } from "../lib/markdownCache";
+import {
+  type BlockSplit,
+  splitMarkdownBlocks,
+  splitStreaming,
+} from "../lib/markdownBlocks";
 import { rehypeSearchHighlight } from "../lib/searchHighlight";
 import { safeMarkdownComponents } from "./safeMarkdown";
 
@@ -110,6 +115,42 @@ function renderBlock(
 
 const renderPlain = (text: string) => renderBlock(text);
 
+/** Parse work per slice of prewarming; the rest waits for the next task,
+ *  so input and paint never queue behind it. */
+const PREWARM_SLICE_MS = 4;
+/** A runaway backlog (many Threads streaming long answers) keeps its
+ *  newest blocks: those are what a revisit shows. */
+const PREWARM_MAX_QUEUED = 2_000;
+const prewarmQueue: string[] = [];
+let prewarming: Promise<void> | null = null;
+
+/** Parse `blocks` into the render cache in small slices, off the caller's
+ *  turn (see lib/backgroundWarmup.ts). Settles once the queue is empty. */
+export function prewarmBlocks(blocks: string[]): Promise<void> {
+  for (const block of blocks)
+    if (!isMarkdownCached(block)) prewarmQueue.push(block);
+  if (prewarmQueue.length > PREWARM_MAX_QUEUED)
+    prewarmQueue.splice(0, prewarmQueue.length - PREWARM_MAX_QUEUED);
+  if (!prewarming && prewarmQueue.length > 0) {
+    prewarming = new Promise((resolve) => {
+      const slice = () => {
+        const end = performance.now() + PREWARM_SLICE_MS;
+        while (prewarmQueue.length > 0 && performance.now() < end) {
+          const block = prewarmQueue.shift() as string;
+          cachedMarkdown(block, renderPlain);
+        }
+        if (prewarmQueue.length > 0) setTimeout(slice, 0);
+        else {
+          prewarming = null;
+          resolve();
+        }
+      };
+      setTimeout(slice, 0);
+    });
+  }
+  return prewarming ?? Promise.resolve();
+}
+
 /** One top-level block, memoised on its text and highlight. */
 const MarkdownBlock = memo(function MarkdownBlock({
   text,
@@ -129,7 +170,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
 
 /** Assistant markdown, split into top-level blocks (§5b). Finished blocks
  *  are memoised and cached; while `streaming`, only the last, still-open
- *  block re-parses on each update. */
+ *  block is re-split and re-parsed on each update. */
 export const MarkdownBlocks = memo(function MarkdownBlocks({
   text,
   streaming = false,
@@ -138,7 +179,14 @@ export const MarkdownBlocks = memo(function MarkdownBlocks({
   streaming?: boolean;
 }) {
   const needles = useContext(SearchHighlight);
-  const blocks = useMemo(() => splitMarkdownBlocks(text), [text]);
+  // Streaming text only ever grows, so the split resumes from its last open
+  // block instead of rescanning the whole answer on every reveal tick.
+  const lastSplit = useRef<BlockSplit | undefined>(undefined);
+  const blocks = useMemo(() => {
+    if (!streaming) return splitMarkdownBlocks(text);
+    lastSplit.current = splitStreaming(text, lastSplit.current);
+    return lastSplit.current.blocks;
+  }, [text, streaming]);
   return (
     <>
       {blocks.map((block, i) => (

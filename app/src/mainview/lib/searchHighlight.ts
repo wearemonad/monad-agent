@@ -1,4 +1,9 @@
 import type { ElementContent, Root } from "hast";
+import { LRUCache } from "lru-cache";
+import remarkGfm from "remark-gfm";
+import remarkParse from "remark-parse";
+import remarkRehype from "remark-rehype";
+import { unified } from "unified";
 import { SKIP, visit } from "unist-util-visit";
 
 /** Search-hit highlighting for a virtualised transcript
@@ -15,48 +20,70 @@ export type SearchMatches = {
   /** Lower-cased strings to mark; empty when nothing matches. */
   needles: string[];
   count: number;
-  /** Index (into the searched texts) of the first text with a match, or -1. */
+  /** Index (into the searched sources) of the first with a match, or -1. */
   first: number;
 };
 
 const NONE: SearchMatches = { needles: [], count: 0, first: -1 };
 
-function countIn(lower: string, needle: string): number {
-  let n = 0;
-  for (
-    let i = lower.indexOf(needle);
-    i !== -1;
-    i = lower.indexOf(needle, i + needle.length)
-  )
-    n++;
-  return n;
+/** Something to search: a user's plain text, or assistant markdown. */
+export type SearchSource = { text: string; markdown: boolean };
+
+/** The text runs a markdown text renders as — the hast text nodes the
+ *  highlight step visits, so a count here is exactly what gets marked: no
+ *  link URLs, no `**` markers, a phrase split by formatting is not one hit.
+ *  Cached: a search re-counts on every streamed item. */
+const renderedRuns = new LRUCache<string, string[]>({
+  maxSize: 2_000_000,
+  sizeCalculation: (_runs, text) => Math.max(1, text.length),
+});
+const toHast = unified().use(remarkParse).use(remarkGfm).use(remarkRehype);
+
+function runsOf(source: SearchSource): string[] {
+  if (!source.markdown) return [source.text];
+  let runs = renderedRuns.get(source.text);
+  if (!runs) {
+    const found: string[] = [];
+    visit(toHast.runSync(toHast.parse(source.text)), "text", (node) => {
+      found.push(node.value);
+    });
+    runs = found;
+    renderedRuns.set(source.text, runs);
+  }
+  return runs;
 }
 
-function matchAll(texts: string[], needles: string[]): SearchMatches {
+const hitsIn = (run: string, needles: readonly string[]) =>
+  splitHits(run, needles).filter((part) => part.hit).length;
+
+function matchAll(sources: SearchSource[], needles: string[]): SearchMatches {
   let count = 0;
   let first = -1;
-  texts.forEach((text, i) => {
-    const lower = text.toLowerCase();
-    const n = needles.reduce((sum, needle) => sum + countIn(lower, needle), 0);
+  sources.forEach((source, i) => {
+    const n = runsOf(source).reduce(
+      (sum, run) => sum + hitsIn(run, needles),
+      0,
+    );
     if (n > 0 && first === -1) first = i;
     count += n;
   });
   return count > 0 ? { needles, count, first } : NONE;
 }
 
-/** Matches for a search term across texts. A term that matches nowhere as a
- *  phrase falls back to its words (three letters or more); a hybrid-search
- *  hit can also match only semantically, and then nothing is marked. */
+/** Matches for a search term across sources. A term that matches nowhere
+ *  as a phrase falls back to its words (three letters or more); a
+ *  hybrid-search hit can also match only semantically, and then nothing is
+ *  marked. */
 export function findSearchMatches(
-  texts: string[],
+  sources: SearchSource[],
   term: string | null,
 ): SearchMatches {
   const phrase = term?.trim().toLowerCase() ?? "";
   if (phrase.length < 2) return NONE;
-  const exact = matchAll(texts, [phrase]);
+  const exact = matchAll(sources, [phrase]);
   if (exact.count > 0) return exact;
   const words = [...new Set(phrase.split(/\s+/).filter((w) => w.length >= 3))];
-  return words.length > 1 ? matchAll(texts, words) : NONE;
+  return words.length > 1 ? matchAll(sources, words) : NONE;
 }
 
 /** `text` cut into runs, each flagged as a hit or not. */

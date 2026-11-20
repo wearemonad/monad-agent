@@ -371,6 +371,8 @@ export class AgentService {
        *  are served by a FakeAgentSession instead of the CLI, through this
        *  service's own delta buffer and emitter. Background runs stay real. */
       fake?: {
+        /** See FakeAgentSession's answerChars. */
+        answerChars?: number;
         onStep?: (
           workspaceId: string,
           workspacePath: string,
@@ -584,6 +586,7 @@ export class AgentService {
         delta: (kind, text) => this.queueDelta(runId, kind, text),
         emit: (event) => this.emit(event),
       },
+      answerChars: this.oneShot.fake?.answerChars,
       onStep: (answer) =>
         this.oneShot.fake?.onStep?.(
           opts.workspaceId,

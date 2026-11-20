@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { findSearchMatches, splitHits } from "./searchHighlight";
 
 describe("findSearchMatches", () => {
-  const texts = ["Kickoff notes", "The Q3 budget review", "budget again"];
+  const texts = ["Kickoff notes", "The Q3 budget review", "budget again"].map(
+    (text) => ({ text, markdown: false }),
+  );
 
   test("counts a phrase case-insensitively and finds its first text", () => {
     expect(findSearchMatches(texts, "  BUDGET ")).toEqual({
@@ -25,6 +27,23 @@ describe("findSearchMatches", () => {
     expect(findSearchMatches(texts, "b")).toEqual(none);
     expect(findSearchMatches(texts, null)).toEqual(none);
     expect(findSearchMatches(texts, "roadmap")).toEqual(none);
+  });
+
+  test("markdown counts what renders: not URLs, not markup", () => {
+    const md = (text: string) => ({ text, markdown: true });
+    expect(
+      findSearchMatches(
+        [md("See [the docs](https://budget.example) and `budget.md`.")],
+        "budget",
+      ).count,
+    ).toBe(1);
+    // "**" splits the phrase across two rendered runs, so it can't be
+    // marked as one — and isn't counted as one; its words are.
+    expect(findSearchMatches([md("A **big** budget")], "big budget")).toEqual({
+      needles: ["big", "budget"],
+      count: 2,
+      first: 0,
+    });
   });
 });
 

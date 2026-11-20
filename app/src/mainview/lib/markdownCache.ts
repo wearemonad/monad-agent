@@ -29,3 +29,8 @@ export function cachedMarkdown(
   }
   return element;
 }
+
+/** The block is cached (and its next render skips the parse). */
+export function isMarkdownCached(text: string): boolean {
+  return cache.has(text);
+}
