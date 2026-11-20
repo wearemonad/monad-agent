@@ -130,6 +130,15 @@ if [[ -n "${DEV_PIDS// /}" ]]; then
 	exit 1
 fi
 
+# --- Match node_modules to the lockfile ---------------------------------------
+# A merged dependency bump (e.g. Dependabot moving electrobun) leaves a stale
+# node_modules until someone runs `bun install` — and then sync projects the
+# old devkit and patch-electrobun.ts refuses it. Install first (a no-op when
+# current; postinstall re-runs sync + the preload patches), before the version
+# bump so a failure leaves nothing behind.
+echo "▶ Installing dependencies from bun.lock…"
+bun install --frozen-lockfile
+
 # --- Version bump ------------------------------------------------------------
 # electrobun.config.ts is the source of truth the app reads; package.json is
 # kept in lockstep so tooling/humans never see a mismatch.
