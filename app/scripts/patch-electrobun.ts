@@ -27,7 +27,9 @@ import * as path from "node:path";
 
 const DEVKIT = path.join(import.meta.dir, "..", ".hutch", "devkit");
 const PRELOAD = path.join(DEVKIT, "api", "preload");
-const EXPECTED_VERSION = "2.0.2";
+// encryption.ts and overlaySync.ts are byte-identical in 2.0.2 and 2.0.6, so
+// the SHA-256s below hold for both.
+const EXPECTED_VERSION = "2.0.6";
 
 type FilePatch = {
   file: string;

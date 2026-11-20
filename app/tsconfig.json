@@ -2,7 +2,9 @@
   "compilerOptions": {
     "target": "ES2020",
     "useDefineForClassFields": true,
-    "lib": ["ES2020", "ES2021.Promise", "DOM", "DOM.Iterable"],
+    // ES2021.String: Electrobun 2.0.6's devkit (type-checked through the
+    // "electrobun" path below) uses String.prototype.replaceAll.
+    "lib": ["ES2020", "ES2021.Promise", "ES2021.String", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
