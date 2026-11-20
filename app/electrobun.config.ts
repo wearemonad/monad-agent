@@ -16,7 +16,7 @@ export default {
   app: {
     name: "Monad",
     identifier: "com.monad.app",
-    version: "0.6.5",
+    version: "0.7.0",
   },
   build: {
     // Electrobun 2 defaults the main process to Cottontail. Monad's backend
