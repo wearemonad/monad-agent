@@ -132,17 +132,17 @@ export function Sidebar({
                 update button right. Labels live in tooltips + aria-label. */}
             <div className="flex items-center gap-1 mt-1">
               <FooterIconButton
+                label="Knowledge"
+                onClick={() => useStore.getState().setKnowledgeOpen(true)}
+              >
+                <Brain />
+              </FooterIconButton>
+              <FooterIconButton
                 label="Settings"
                 onPointerDown={() => perf.markClick("settings")}
                 onClick={() => useStore.getState().setSettingsOpen(true)}
               >
                 <Settings />
-              </FooterIconButton>
-              <FooterIconButton
-                label="Knowledge"
-                onClick={() => useStore.getState().setKnowledgeOpen(true)}
-              >
-                <Brain />
               </FooterIconButton>
               <SidebarUpdateButton />
             </div>
