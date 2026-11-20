@@ -136,10 +136,11 @@ export function Sidebar({
             <OutboxPanel />
             {/* T3 Code-style utility row: icon buttons left, the round
                 update button right. Labels live in tooltips + aria-label.
-                -ml-2 cancels the 8px between the 32px button's edge and its
-                16px glyph, so at rest the first glyph lines up with the
-                Inbox/Outbox cards' left edge; the hover fill spills past. */}
-            <div className="flex items-center gap-1 mt-1 -ml-2">
+                Buttons are 32px squares with a 16px glyph (8px inset); -mx-2
+                and -mb-2 move the row out by that inset, so at rest the
+                glyphs sit on the cards' left/right edges, and a hovered
+                square is as far from the pane's side as from its bottom. */}
+            <div className="flex items-center gap-1 mt-1 -mx-2 -mb-2">
               <FooterIconButton
                 label="Knowledge"
                 onClick={() => useStore.getState().setKnowledgeOpen(true)}
