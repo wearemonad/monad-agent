@@ -4,6 +4,7 @@ import {
   CalendarClock,
   Check,
   ChevronDown,
+  CircleCheck,
   Clock,
   MessageSquare,
   MoreHorizontal,
@@ -19,8 +20,6 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { orbFrameUrl } from "../lib/orbFrame";
-import { useResolvedScheme } from "../lib/theme";
 import type { ContentHit, SessionKind, SessionSummary } from "../../shared/ipc";
 import { useActiveThread, useStore } from "../store";
 import {
@@ -56,30 +55,42 @@ import { HealthBanner } from "./HealthBanner";
 import { SettingsNav } from "./SettingsPage";
 import { InboxPanel } from "./InboxPanel";
 import { ReviewPanel } from "./ReviewPanel";
-import { UpdateControls } from "./UpdateControls";
+import { SidebarUpdateButton } from "./SidebarUpdateButton";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 
 const INITIAL_THREADS_SHOWN = 12;
 /** Briefings accumulate one per weekday — show the latest few. */
 const INITIAL_BRIEFINGS_SHOWN = 3;
 
-/** The working cue for a sidebar row: a still frame of the thinking orb (one
- *  shared image per theme — no canvas per working Thread) with a gentle CSS
- *  pulse that only touches transform and opacity, so it runs on the
- *  compositor. The live canvas orb stays in the open Thread's cue. */
-function SidebarOrb() {
-  const src = orbFrameUrl(20, useResolvedScheme() === "dark");
-  if (!src) return null; // no 2D canvas — the row simply shows no cue
+/** The working cue for a sidebar row, after T3 Code's: a small dashed ring
+ *  in the brand colour that turns slowly. Pure SVG + a transform-only CSS
+ *  animation (runs on the compositor), still under reduced motion. */
+function WorkingRing() {
   return (
-    <img
-      src={src}
-      width={20}
-      height={20}
-      alt=""
-      aria-hidden
-      draggable={false}
-      className="orb-pulse block shrink-0"
-    />
+    <span className="flex items-center" title="Working…">
+      <svg
+        viewBox="0 0 12 12"
+        aria-hidden
+        className="working-ring block size-3 shrink-0 text-brand"
+      >
+        <circle
+          cx="6"
+          cy="6"
+          r="5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeDasharray="2.2 2.5"
+        />
+      </svg>
+      <span className="sr-only">Working</span>
+    </span>
   );
 }
 
@@ -119,33 +130,68 @@ export function Sidebar({
           <SearchBox />
           <ThreadList />
           <div className="p-3 gap-2 flex flex-col">
-            <UpdateControls variant="compact" />
             <HealthBanner />
             <ReviewPanel />
             <InboxPanel />
             <OutboxPanel />
-            <div className="flex gap-2 mt-2">
-              <Button
-                variant="secondary"
-                className="flex-1"
+            {/* T3 Code-style utility row: icon buttons left, the round
+                update button right. Labels live in tooltips + aria-label.
+                Buttons are 32px squares with an 18px glyph (7px inset);
+                -mx-1.75 and -mb-1.75 move the row out by that inset, so at
+                rest the glyphs sit on the cards' left/right edges, and a
+                hovered square is as far from the pane's side as from its
+                bottom. */}
+            <div className="flex items-center gap-1 mt-1 -mx-1.75 -mb-1.75">
+              <FooterIconButton
+                label="Knowledge"
                 onClick={() => useStore.getState().setKnowledgeOpen(true)}
               >
-                <Brain className="size-3.5" /> Knowledge
-              </Button>
-              <Button
-                variant="secondary"
-                className="flex-1"
-                title="Settings"
+                <Brain className="size-4.5" />
+              </FooterIconButton>
+              <FooterIconButton
+                label="Settings"
                 onPointerDown={() => perf.markClick("settings")}
                 onClick={() => useStore.getState().setSettingsOpen(true)}
               >
-                <Settings className="size-3.5" /> Settings
-              </Button>
+                <Settings className="size-4.5" />
+              </FooterIconButton>
+              <SidebarUpdateButton />
             </div>
           </div>
         </>
       )}
     </aside>
+  );
+}
+
+/** A footer utility: icon only, named by its tooltip and aria-label. */
+function FooterIconButton({
+  label,
+  children,
+  ...props
+}: {
+  label: string;
+  children: ReactNode;
+  onClick: () => void;
+  onPointerDown?: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={label}
+            className="text-muted-foreground hover:text-foreground"
+            {...props}
+          />
+        }
+      >
+        {children}
+      </TooltipTrigger>
+      <TooltipContent side="top">{label}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -536,9 +582,7 @@ function ThreadSection({
           </span>
         )}
         {!expanded && status.working ? (
-          <span className="flex items-center" title="Working…">
-            <SidebarOrb />
-          </span>
+          <WorkingRing />
         ) : (
           !expanded &&
           status.unread > 0 && (
@@ -599,7 +643,7 @@ function ThreadRow({
   thread: SessionSummary;
   active: boolean;
   pinned: boolean;
-  /** A run is streaming into this thread — show the spinner. */
+  /** A run is streaming into this thread — the ring replaces the time. */
   working: boolean;
   /** The thread's run is waiting on a permission card — amber badge; opening
    *  the thread shows the card. */
@@ -734,31 +778,15 @@ function ThreadRow({
           void api.openSession(thread.sessionId);
         }}
       >
-        {/* While a run streams into this thread the spinner takes the leading
-            icon slot, replacing the kind glyph rather than sitting beside it.
-            A run paused on a permission card shows the amber badge instead;
-            an unread thread's dot also wins over the kind glyph — one slot,
-            most urgent state first. */}
+        {/* One leading slot: a run paused on a permission card shows the
+            amber badge, otherwise the kind glyph. Working and Done show on
+            the right, in the timestamp's place. */}
         {needsInput ? (
           <span
             className="relative shrink-0 self-center mr-1.5 text-warning"
             title="Waiting for permission — open the thread to answer"
           >
             <ShieldQuestion size={12} />
-          </span>
-        ) : working ? (
-          <span
-            className="relative shrink-0 self-center mr-1.5"
-            title="Working…"
-          >
-            <SidebarOrb />
-          </span>
-        ) : unread ? (
-          <span
-            className="relative shrink-0 self-center mr-2 flex items-center justify-center"
-            title="Finished — open to see the result"
-          >
-            <span className="size-1.5 rounded-full bg-brand" />
           </span>
         ) : (
           thread.kind &&
@@ -780,7 +808,25 @@ function ThreadRow({
             menuOpen ? "opacity-0" : "group-hover:opacity-0",
           )}
         >
-          {relativeTime(thread.updatedAt)}
+          {/* A working thread swaps its timestamp for the ring — "updated
+              2m ago" is meaningless while it's updating right now. */}
+          {/* A run paused on a permission card isn't working — it's waiting
+              on you, which the amber badge on the left already says. */}
+          {working && !needsInput ? (
+            <WorkingRing />
+          ) : unread ? (
+            // T3 Code's "Done": finished since you last looked. Opening the
+            // thread clears unread and the time comes back.
+            <span
+              className="flex items-center gap-1 font-medium text-success"
+              title="Finished — open to see the result"
+            >
+              <CircleCheck size={12} aria-hidden />
+              Done
+            </span>
+          ) : (
+            relativeTime(thread.updatedAt)
+          )}
         </span>
         <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
           <DropdownMenuTrigger

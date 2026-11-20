@@ -415,24 +415,18 @@ mark.search-hit {
   }
 }
 
-/* Sidebar working cue: a still orb frame with a compositor-only pulse. */
-@keyframes orb-pulse {
-  0%,
-  100% {
-    transform: scale(0.88);
-    opacity: 0.7;
-  }
-  50% {
-    transform: scale(1);
-    opacity: 1;
+/* Sidebar working cue: a dashed ring turning slowly — transform only, so it
+   stays on the compositor however many Threads are working. */
+@keyframes working-ring {
+  to {
+    transform: rotate(360deg);
   }
 }
-.orb-pulse {
-  animation: orb-pulse 1.8s ease-in-out infinite;
-  will-change: transform, opacity;
+.working-ring {
+  animation: working-ring 2.4s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .orb-pulse {
+  .working-ring {
     animation: none;
   }
 }

@@ -3,6 +3,11 @@ import { Loader2 } from "lucide-react";
 import { useStore } from "../store";
 import { api } from "../rpc";
 import { cn } from "@/lib/utils";
+import {
+  applyUpdateStatus,
+  RESTING_STATUSES,
+  type UpdateFlags,
+} from "../lib/updateButton";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -15,21 +20,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-/** Updater statuses that are NOT an update in flight — everything else means
- *  work is happening and the button should spin. "check-complete",
- *  "update-available" and "download-complete" are resting states waiting on
- *  the user, not progress: counting them as busy pinned the button to a
- *  disabled "Updating…" forever, with no way to move forward. */
-const RESTING_STATUSES = [
-  "idle",
-  "check-complete",
-  "no-update",
-  "update-available",
-  "download-complete",
-  "complete",
-  "error",
-];
-
 /** T3-style two-phase update controls: Check → Download (spinner + progress %)
  *  → Restart & install (confirmation dialog) → app relaunches.
  *
@@ -37,28 +27,24 @@ const RESTING_STATUSES = [
  *  downloaded → "install", available (or a failed download with a known
  *  available version) → "download", otherwise → "check".
  *
- *  Two variants: "full" (settings) shows the manual check button and status
- *  lines; "compact" (sidebar) renders nothing at all until the background
- *  check finds an update, then shows just the action button. */
-export function UpdateControls({
-  className,
-  variant = "full",
-}: {
-  className?: string;
-  variant?: "full" | "compact";
-}) {
+ *  This is the Settings panel version, with the manual check button and
+ *  status lines. The sidebar's round button is SidebarUpdateButton. */
+export function UpdateControls({ className }: { className?: string }) {
   const settings = useStore((s) => s.settings);
   const updateStatus = useStore((s) => s.updateStatus);
   const [checking, setChecking] = useState(false);
-  // Bridges the gap between clicking Download/Install and the first status
-  // push arriving, and papers over the "update-available" re-emit that
-  // Electrobun's downloadUpdate() fires mid-download when it re-checks.
-  const [downloading, setDownloading] = useState(false);
-  const [installing, setInstalling] = useState(false);
+  // `downloading`/`installing` bridge the gap between a click and the first
+  // status push (and the update-available re-emit downloadUpdate() fires
+  // mid-way). `sawAvailable` survives later statuses so Download can come
+  // back as a retry — T3's errorContext model. Pushes settle them via
+  // applyUpdateStatus, shared with the sidebar button.
+  const [{ downloading, installing, sawAvailable }, setFlags] =
+    useState<UpdateFlags>({
+      downloading: false,
+      installing: false,
+      sawAvailable: false,
+    });
   const [confirmOpen, setConfirmOpen] = useState(false);
-  // Availability survives later statuses (download errors, etc.) so the
-  // Download button can come back as a retry — T3's errorContext model.
-  const [sawAvailable, setSawAvailable] = useState(false);
   const [result, setResult] = useState<{
     updateAvailable: boolean;
     error: string;
@@ -70,11 +56,9 @@ export function UpdateControls({
   const errored = status === "error";
 
   useEffect(() => {
-    if (status === "update-available") setSawAvailable(true);
-    if (status === "download-complete" || status === "error")
-      setDownloading(false);
-    if (status === "error") setInstalling(false);
-  }, [status]);
+    if (updateStatus)
+      setFlags((f) => applyUpdateStatus(f, updateStatus.status));
+  }, [updateStatus]);
 
   if (!settings) return null;
 
@@ -91,34 +75,22 @@ export function UpdateControls({
   };
 
   const download = () => {
-    setDownloading(true);
+    setFlags((f) => ({ ...f, downloading: true }));
     void api.updateDownload();
   };
 
   const install = () => {
     setConfirmOpen(false);
-    setInstalling(true);
+    setFlags((f) => ({ ...f, installing: true }));
     void api.updateInstall();
   };
 
   const confirmDialog = (
-    <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-      <AlertDialogContent size="sm">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Install update and restart?</AlertDialogTitle>
-          <AlertDialogDescription>
-            Any running tasks will be interrupted. Make sure you're ready before
-            continuing.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={install}>
-            Restart &amp; install
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <InstallUpdateDialog
+      open={confirmOpen}
+      onOpenChange={setConfirmOpen}
+      onConfirm={install}
+    />
   );
 
   const installButton = (
@@ -147,23 +119,6 @@ export function UpdateControls({
           : "Downloading…"}
     </Button>
   );
-
-  if (variant === "compact") {
-    // Sidebar: invisible until the background check finds an update — the
-    // manual check, version line and status text live in Settings.
-    if (settings.channel === "dev" || !settings.updatesConfigured) return null;
-    if (installDone || (!updateAvailable && !busy && !updateReady)) return null;
-    return (
-      <div className={cn("space-y-1.5", className)}>
-        {updateReady && !busy
-          ? installButton
-          : busy
-            ? progressButton
-            : downloadButton}
-        {confirmDialog}
-      </div>
-    );
-  }
 
   return (
     <div className={cn("space-y-1.5", className)}>
@@ -242,5 +197,36 @@ export function UpdateControls({
         </>
       )}
     </div>
+  );
+}
+
+/** "Install update and restart?" — shared by Settings and the sidebar button. */
+export function InstallUpdateDialog({
+  open,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent size="sm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Install update and restart?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Any running tasks will be interrupted. Make sure you're ready before
+            continuing.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={onConfirm}>
+            Restart &amp; install
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
