@@ -135,10 +135,10 @@ export function Sidebar({
             <OutboxPanel />
             {/* T3 Code-style utility row: icon buttons left, the round
                 update button right. Labels live in tooltips + aria-label.
-                pl-0.5 puts the first glyph on the 22px column the thread
-                titles and search icon start at (12px pane padding + 8px of
-                the 32px button + 2px). */}
-            <div className="flex items-center gap-1 mt-1 pl-0.5">
+                -ml-2 cancels the 8px between the 32px button's edge and its
+                16px glyph, so at rest the first glyph lines up with the
+                Inbox/Outbox cards' left edge; the hover fill spills past. */}
+            <div className="flex items-center gap-1 mt-1 -ml-2">
               <FooterIconButton
                 label="Knowledge"
                 onClick={() => useStore.getState().setKnowledgeOpen(true)}
