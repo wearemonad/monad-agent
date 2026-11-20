@@ -1,10 +1,10 @@
 /** biome-ignore-all lint/a11y/useButtonType: there is no <form> in this view, so
  *  no button here can default to submitting one — they are all click targets. */
 import {
-  type ComponentProps,
   memo,
   Profiler,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -29,8 +29,13 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import {
+  LegendList,
+  type LegendListRef,
+  type LegendListRenderItemProps,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from "@legendapp/list/react";
 import { ThinkingOrb, type OrbState } from "thinking-orbs";
 import type { ChatItem, SkillInfo } from "../../shared/ipc";
 import { useActiveThread, useStore } from "../store";
@@ -42,7 +47,8 @@ import { toBlocks, type MessageBlock } from "../transcriptBlocks";
 import { ARTIFACT_ICONS } from "./ArtifactPanel";
 import { EmailDraftCard } from "./EmailDraftCard";
 import { PermissionCards } from "./PermissionCards";
-import { safeMarkdownComponents } from "./safeMarkdown";
+import { MarkdownBlocks, SearchHighlight } from "./MarkdownBlocks";
+import { findSearchMatches, splitHits } from "../lib/searchHighlight";
 import { bytesToBase64, fmtTokens } from "../util";
 import { choiceKey, contextWindowFor, isPickedModel } from "../lib/models";
 import { cn } from "@/lib/utils";
@@ -362,81 +368,22 @@ function RememberButton({
   );
 }
 
-/** knowledgePaths as a Set, built once per list (the selector below runs on
- *  every store update, for every citation on screen). */
-const knowledgeSets = new WeakMap<string[], Set<string>>();
-function knowledgeSet(paths: string[]): Set<string> {
-  let set = knowledgeSets.get(paths);
-  if (!set) {
-    set = new Set(paths);
-    knowledgeSets.set(paths, set);
-  }
-  return set;
-}
-
-/** Inline code in assistant markdown. A `path.md` that matches a known
- *  knowledge doc becomes a clickable citation. It subscribes to the knowledge
- *  list itself with a boolean selector, so a knowledge-list change re-renders
- *  only the affected citations and never re-parses the markdown around them. */
-function KnowledgeCode({
-  node,
-  className,
-  children,
-  ...props
-}: ComponentProps<"code"> & { node?: unknown }) {
-  void node;
-  // v9 has no `inline` flag: fenced blocks carry a language-* class.
-  const isBlock = /\blanguage-/.test(className ?? "");
-  const rel = isBlock
-    ? null
-    : String(children)
-        .trim()
-        .replace(/^knowledge\//, "")
-        .replace(/^\.\//, "");
-  const isDoc = useStore((s) =>
-    rel === null ? false : knowledgeSet(s.knowledgePaths).has(rel),
-  );
-  if (rel !== null && isDoc) {
-    return (
-      <button
-        className="citation text-brand underline decoration-dotted underline-offset-2 hover:text-brand"
-        title={`Open knowledge/${rel}`}
-        onClick={() => useStore.getState().openKnowledgeAt(rel)}
-      >
-        {children}
-      </button>
-    );
-  }
-  return (
-    <code className={className} {...props}>
-      {children}
-    </code>
+/** Plain text with search hits marked — the user's own messages, which
+ *  aren't markdown. */
+function HighlightedText({ text }: { text: string }) {
+  const needles = useContext(SearchHighlight);
+  if (needles.length === 0) return text;
+  return splitHits(text, needles).map((part, i) =>
+    part.hit ? (
+      // biome-ignore lint/suspicious/noArrayIndexKey: runs never reorder.
+      <mark key={i} className="search-hit">
+        {part.text}
+      </mark>
+    ) : (
+      part.text
+    ),
   );
 }
-
-const assistantMarkdownComponents = {
-  ...safeMarkdownComponents,
-  code: KnowledgeCode,
-};
-
-/** Assistant markdown with clickable citations (KnowledgeCode). Memoized on
- *  text alone: parsing is the expensive part of a transcript render, and a
- *  completed message's text never changes — only the streaming tail should
- *  ever re-parse. */
-const AssistantMarkdown = memo(function AssistantMarkdown({
-  text,
-}: {
-  text: string;
-}) {
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={assistantMarkdownComponents}
-    >
-      {text}
-    </ReactMarkdown>
-  );
-});
 
 /** An image the agent generated, shown from where the harness left it (the
  *  transcript stores only its path). Nothing is copied unless the user
@@ -528,11 +475,9 @@ function GeneratedImage({ path, name }: { path: string; name: string }) {
   );
 }
 
-/** One transcript block, memoized. The streaming typewriter re-renders
- *  <Messages> on every reveal tick, and without this each frame would re-run
- *  the whole transcript through ReactMarkdown. Block objects are stable
- *  across ticks AND across item appends (toBlocks reuses unchanged blocks),
- *  so the shallow compare bails everywhere except the block that changed. */
+/** One transcript block, memoized. Block objects are stable across item
+ *  appends (toBlocks reuses unchanged blocks), so when the list re-renders,
+ *  the shallow compare bails everywhere except the block that changed. */
 const TranscriptBlock = memo(function TranscriptBlock({
   block,
   interstitial,
@@ -551,7 +496,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
       return (
         <div className="group flex flex-col items-end gap-0.5">
           <div className="max-w-[80%] w-fit bg-muted/40 text-foreground/90 rounded-2xl rounded-br-md px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap">
-            {item.text}
+            <HighlightedText text={item.text} />
           </div>
           <RememberButton text={item.text} align="end" />
         </div>
@@ -560,7 +505,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
       return (
         <div className="group flex flex-col gap-0.5">
           <div className="max-w-[90%] prose prose-sm prose-pre:bg-background">
-            <AssistantMarkdown text={item.text} />
+            <MarkdownBlocks text={item.text} />
           </div>
           {!interstitial && <RememberButton text={item.text} align="start" />}
         </div>
@@ -627,8 +572,10 @@ const TranscriptBlock = memo(function TranscriptBlock({
  *  actually doing right now. States and labels come from the orbs library's
  *  own vocabulary (orbs.jakubantalik.com): composing for thinking/generating,
  *  and per-tool verbs while a tool call is pending. */
-function liveCue(items: ChatItem[]): { state: OrbState; label: string } {
-  const last = items[items.length - 1];
+function liveCue(last: ChatItem | undefined): {
+  state: OrbState;
+  label: string;
+} {
   if (last?.type === "tool" && last.pending) {
     if (/search|grep|glob|find/i.test(last.name))
       return { state: "searching", label: "Searching…" };
@@ -641,12 +588,9 @@ function liveCue(items: ChatItem[]): { state: OrbState; label: string } {
 
 /** The liveness cue shown while a run is in flight: just the orb and a quiet
  *  label — no chip/pill dressing. */
-function LiveCueChip({ items }: { items: ChatItem[] }) {
-  const cue = liveCue(items);
+function LiveCueChip({ last }: { last: ChatItem | undefined }) {
+  const cue = liveCue(last);
   return (
-    // mt-4: the activity line above zeroes its margins (container's
-    // [&>.text-xs]:my-0), so the cue brings its own breathing room; against
-    // normal blocks this collapses with their spacing instead of stacking.
     <div className="mt-4 flex items-center gap-2 text-muted-foreground text-sm">
       <ThinkingOrb state={cue.state} size={20} aria-hidden />
       {cue.label}
@@ -677,15 +621,19 @@ function TranscriptSkeleton() {
   );
 }
 
-function Messages() {
-  const items = useActiveThread((t) => t.items);
+/** The list's footer: everything still being generated. It subscribes to
+ *  the stream itself, so the ~30 Hz typewriter re-renders only this, never
+ *  the list. The complete item replaces the streamed text (the store clears
+ *  the buffer), so the two never show together. */
+const StreamingFooter = memo(function StreamingFooter() {
   const streamingText = useActiveThread((t) => t.streamingText);
   const streamingThinking = useActiveThread((t) => t.streamingThinking);
-  // Typewriter smoothing: reveal the streamed buffer progressively instead of
-  // snapping each coalesced chunk in. (Thinking stays unsmoothed — its
-  // sliding-window ticker isn't append-only, so a reveal cursor can't track it.)
+  // Typewriter smoothing over the whole buffer: the reveal is a slice, and
+  // MarkdownBlocks re-parses only the block it lands in. (Thinking stays
+  // unsmoothed — its sliding-window ticker isn't append-only.)
   const displayedText = useSmoothText(streamingText);
   const runState = useActiveThread((t) => t.runState);
+  const last = useActiveThread((t) => t.items[t.items.length - 1]);
   // Only this thread's pending cards count — a parallel thread's permission
   // wait must not hide the "Thinking…" cue here.
   const permissionCount = useStore(
@@ -694,165 +642,227 @@ function Messages() {
         (r) => s.runThreads[r.runId] === s.activeThreadId,
       ).length,
   );
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
-  const pinnedRef = useRef(true);
+  return (
+    // pb-52 keeps the last message readable above the floating composer.
+    <div className="mx-auto w-full px-6 max-w-3xl pb-52">
+      {streamingThinking && (
+        <div className="mt-3 text-muted-foreground/70 text-xs italic whitespace-pre-wrap line-clamp-4 max-w-[90%]">
+          {streamingThinking.slice(-600)}
+        </div>
+      )}
+      {displayedText && (
+        <div className="mt-3 max-w-[90%] prose prose-sm prose-pre:bg-background">
+          <MarkdownBlocks text={displayedText} streaming />
+        </div>
+      )}
+      <div className="not-empty:mt-3">
+        <PermissionCards />
+      </div>
+      {runState === "running" && permissionCount === 0 && !displayedText && (
+        // Stopping lives on the composer's round stop button — no second
+        // control here, just a quiet liveness cue. Hidden while a permission
+        // card is showing (the agent is waiting on the user) and while real
+        // tokens are already streaming in.
+        <LiveCueChip last={last} />
+      )}
+    </div>
+  );
+});
+
+type RowType = "user" | "assistant" | "activity" | "card";
+
+/** One list row: a transcript block plus what it needs from its
+ *  neighbours. Rows are reused while nothing about them changes, so the list
+ *  re-renders only rows that did. */
+type Row = {
+  block: MessageBlock;
+  type: RowType;
+  /** Space above, in px. List items are positioned one by one, so the old
+   *  sibling margins (tight activity lines, air at the seams) are explicit. */
+  gap: number;
+  /** Assistant text right before a tool-call group is narration. */
+  interstitial: boolean;
+};
+
+const rowType = (b: MessageBlock): RowType =>
+  b.kind === "activity"
+    ? "activity"
+    : b.item.type === "user" || b.item.type === "assistant"
+      ? b.item.type
+      : "card";
+
+function gapAbove(prev: MessageBlock | undefined, block: MessageBlock) {
+  if (!prev) return 0;
+  const lineAbove = prev.kind === "activity";
+  const line = block.kind === "activity";
+  if (line) return lineAbove ? 0 : 16;
+  return 12;
+}
+
+function toRows(blocks: MessageBlock[], prev: Row[]): Row[] {
+  return blocks.map((block, i) => {
+    const gap = gapAbove(blocks[i - 1], block);
+    const interstitial = blocks[i + 1]?.kind === "activity";
+    const old = prev[i];
+    return old &&
+      old.block === block &&
+      old.gap === gap &&
+      old.interstitial === interstitial
+      ? old
+      : { block, type: rowType(block), gap, interstitial };
+  });
+}
+
+/** What search matches in a block: the text people wrote or read. */
+const searchableText = (b: MessageBlock) =>
+  b.kind === "item" && (b.item.type === "user" || b.item.type === "assistant")
+    ? b.item.text
+    : "";
+
+function renderRow({ item: row }: LegendListRenderItemProps<Row>) {
+  return (
+    // Keyed by block: list containers are recycled, and a block's own state
+    // (an open activity group, a loaded image) must not follow its container.
+    <div
+      key={row.block.key}
+      className="mx-auto w-full px-6 max-w-3xl"
+      style={{ paddingTop: row.gap }}
+    >
+      <TranscriptBlock block={row.block} interstitial={row.interstitial} />
+    </div>
+  );
+}
+
+/** Within this many px of the end counts as "at the end". */
+const AT_END_PX = 80;
+const NO_NEEDLES: readonly string[] = [];
+
+function Messages() {
+  const items = useActiveThread((t) => t.items);
+  const loaded = useActiveThread((t) => t.loaded);
+  const activeThreadId = useStore((s) => s.activeThreadId);
+  const listRef = useRef<LegendListRef>(null);
   // Reuses the previous render's block objects wherever their items are
   // unchanged, so only the growing block re-renders (TranscriptBlock memo).
   const prevBlocks = useRef<MessageBlock[]>([]);
-  const blocks = useMemo(
-    () => (prevBlocks.current = toBlocks(items, prevBlocks.current)),
-    [items],
-  );
+  const prevRows = useRef<Row[]>([]);
+  const rows = useMemo(() => {
+    prevBlocks.current = toBlocks(items, prevBlocks.current);
+    prevRows.current = toRows(prevBlocks.current, prevRows.current);
+    return prevRows.current;
+  }, [items]);
 
-  // Mirror of pinnedRef as state, so the scroll-to-end pill can render when
-  // the user has scrolled up. (The ref stays: the autoscroll effect reads it
-  // without needing scroll position in its dependency list.)
+  // At the end of the transcript: drives the scroll-to-end pill. Following
+  // the stream is maintainScrollAtEnd's job, and it follows only from here.
   const [pinned, setPinned] = useState(true);
 
-  // Thread switch (open from the sidebar, new chat, restoring a stashed run):
-  // jump straight to the end of the new transcript. activeThreadId changes
-  // in the same store update that swaps `items` in, so this layout effect
-  // runs after that transcript is in the DOM and before it paints — no flash
-  // of the thread's top, no smooth-scroll animation. Re-pins too, so a
-  // scrolled-up position on the previous thread can't suppress the jump.
-  const activeThreadId = useStore((s) => s.activeThreadId);
-  // A Thread opened from disk shows a skeleton until its history is in; the
-  // jump to the end runs again when it arrives.
-  const loaded = useActiveThread((t) => t.loaded);
-  // Deadline (performance.now() ms) until which transcript growth re-pins the
-  // end after a switch — images, markdown and mermaid settle their height
-  // after first paint and would otherwise leave the view short of the end.
-  const repinUntilRef = useRef(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: activeThreadId and loaded are the triggers — the effect must re-run on every thread switch (and once its history lands), not on the values it reads.
+  // Each Thread keeps its own scroll position (ThreadState.scrollOffset,
+  // null = at the end). Scroll events record where the open Thread is; a
+  // switch saves that for the Thread being left and restores the new one's
+  // before paint. A Thread that was at the end opens at the end.
+  const shownThread = useRef(activeThreadId);
+  const lastScroll = useRef<{ threadId: string; offset: number | null }>({
+    threadId: activeThreadId,
+    offset: null,
+  });
   useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    pinnedRef.current = true;
-    setPinned(true);
-    repinUntilRef.current = performance.now() + 1000;
-    el.scrollTop = el.scrollHeight;
+    const list = listRef.current;
+    shownThread.current = activeThreadId;
+    if (!list || !loaded) return;
+    const saved =
+      useStore.getState().threads[activeThreadId]?.scrollOffset ?? null;
+    if (saved === null) void list.scrollToEnd({ animated: false });
+    else void list.scrollToOffset({ offset: saved, animated: false });
+    setPinned(saved === null);
+    return () => {
+      const last = lastScroll.current;
+      if (last.threadId === activeThreadId)
+        useStore.getState().setScrollOffset(activeThreadId, last.offset);
+    };
   }, [activeThreadId, loaded]);
 
-  // The re-pin window above: while it's open and the view is still pinned,
-  // any growth of the transcript column snaps the end back into view. The
-  // user scrolling up un-pins and ends it early; a search-hit scroll un-pins
-  // the same way. Outside the window this is inert, so the smooth scroll on
-  // send keeps its animation.
-  useEffect(() => {
-    const el = scrollRef.current;
-    const content = contentRef.current;
-    if (!el || !content) return;
-    const ro = new ResizeObserver(() => {
-      if (pinnedRef.current && performance.now() < repinUntilRef.current)
-        el.scrollTop = el.scrollHeight;
-    });
-    ro.observe(content);
-    return () => ro.disconnect();
-  }, []);
-
-  const onScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    pinnedRef.current = atBottom;
-    setPinned(atBottom);
+  const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    const atEnd =
+      contentSize.height - contentOffset.y - layoutMeasurement.height <
+      AT_END_PX;
+    lastScroll.current = {
+      threadId: shownThread.current,
+      offset: atEnd ? null : contentOffset.y,
+    };
+    setPinned(atEnd);
   };
 
   const scrollToEnd = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    // Re-pin immediately so streaming autoscroll takes over once the smooth
-    // animation lands (intermediate scroll events un-pin and re-pin en route).
-    pinnedRef.current = true;
     setPinned(true);
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    void listRef.current?.scrollToEnd({ animated: true });
   }, []);
 
   // Sending a message returns the view to the end even when scrolled up: a
-  // user item appended at the tail means the composer was just used.
+  // user item appended at the tail of the SAME Thread means the composer was
+  // just used (a switch to a Thread ending in a user item restores instead).
+  const seen = useRef({ threadId: activeThreadId, length: items.length });
   useEffect(() => {
-    if (items[items.length - 1]?.type === "user") scrollToEnd();
-  }, [items, scrollToEnd]);
+    const grew =
+      seen.current.threadId === activeThreadId &&
+      items.length > seen.current.length;
+    seen.current = { threadId: activeThreadId, length: items.length };
+    if (grew && items[items.length - 1]?.type === "user") scrollToEnd();
+  }, [items, activeThreadId, scrollToEnd]);
 
-  // Search-hit highlighting: when a thread was opened from a ⌘K content hit,
-  // paint every occurrence of the term via the CSS Custom Highlight API (no
-  // DOM mutation, so React never notices) and scroll the first one into view.
-  // Matching is per text node — a term that spans formatting (e.g. across a
-  // bold boundary) falls back to per-word highlights. A hybrid-search hit can
-  // also match only semantically; then nothing highlights, by design.
+  // Search hits (a Thread opened from a ⌘K content hit). Off-screen blocks
+  // aren't in the DOM, so matches come from the data, the renderers mark
+  // them, and the first one is reached through the list.
   const highlightTerm = useStore((s) => s.highlightTerm);
   const setHighlightTerm = useStore((s) => s.setHighlightTerm);
   const sessionId = useActiveThread((t) => t.resumeSessionId);
-  const [matchCount, setMatchCount] = useState(0);
-  // Scroll to the first match once per (session, term) — items keep changing
-  // during streaming and re-running the scroll would yank the view.
-  const scrolledForKey = useRef<string | null>(null);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `blocks` is a deliberate dependency — the effect walks the DOM those blocks render into, so new content must re-paint the highlights.
+  const matches = useMemo(
+    () =>
+      findSearchMatches(
+        rows.map((r) => searchableText(r.block)),
+        highlightTerm,
+      ),
+    [rows, highlightTerm],
+  );
+  // Stable across streaming updates, or every visible block would re-render.
+  const needlesKey = matches.needles.join("\0");
+  const needles = useMemo(
+    () => (needlesKey ? needlesKey.split("\0") : NO_NEEDLES),
+    [needlesKey],
+  );
+  // Jump to the first match once per (session, term): rows keep changing
+  // during streaming, and re-running the jump would yank the view.
+  const jumpedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!("highlights" in CSS)) return;
-    const el = scrollRef.current;
-    const term = highlightTerm?.trim().toLowerCase() ?? "";
-    if (!el || term.length < 2) {
-      CSS.highlights.delete("search-term");
-      setMatchCount(0);
-      scrolledForKey.current = null;
+    const list = listRef.current;
+    if (!list || matches.first === -1) {
+      if (matches.first === -1) jumpedFor.current = null;
       return;
     }
-    const scrollKey = `${sessionId ?? ""}:${term}`;
-
-    const collect = (needles: string[]): Range[] => {
-      const ranges: Range[] = [];
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-      let node: Node | null = walker.nextNode();
-      while (node) {
-        const lower = (node.textContent ?? "").toLowerCase();
-        for (const needle of needles) {
-          let idx = lower.indexOf(needle);
-          while (idx !== -1) {
-            const r = new Range();
-            r.setStart(node, idx);
-            r.setEnd(node, idx + needle.length);
-            ranges.push(r);
-            idx = lower.indexOf(needle, idx + needle.length);
-          }
-        }
-        node = walker.nextNode();
-      }
-      return ranges;
-    };
-
-    // Ranges need the rendered DOM, so wait a frame for ReactMarkdown output.
-    const raf = requestAnimationFrame(() => {
-      let ranges = collect([term]);
-      if (ranges.length === 0) {
-        const words = [
-          ...new Set(term.split(/\s+/).filter((w) => w.length >= 3)),
-        ];
-        if (words.length > 1) ranges = collect(words);
-      }
-      setMatchCount(ranges.length);
-      if (ranges.length === 0) {
-        CSS.highlights.delete("search-term");
-        return;
-      }
-      CSS.highlights.set("search-term", new Highlight(...ranges));
-      if (scrolledForKey.current !== scrollKey) {
-        scrolledForKey.current = scrollKey;
-        const rect = ranges[0].getBoundingClientRect();
-        const elRect = el.getBoundingClientRect();
-        el.scrollTop += rect.top - elRect.top - el.clientHeight / 3;
-        // Un-pin so the bottom-autoscroll doesn't yank away from the match.
-        pinnedRef.current = false;
-        setPinned(false);
-      }
-    });
-    return () => {
-      cancelAnimationFrame(raf);
-      CSS.highlights.delete("search-term");
-    };
-  }, [highlightTerm, sessionId, blocks]);
+    const key = `${sessionId ?? ""}:${needlesKey}`;
+    if (jumpedFor.current === key) return;
+    jumpedFor.current = key;
+    setPinned(false);
+    let raf = 0;
+    void list
+      .scrollToIndex({ index: matches.first, animated: false })
+      .then(() => {
+        // The block is on screen now; bring its first mark to a third of
+        // the way down (a long block's hit can sit far below its top).
+        raf = requestAnimationFrame(() => {
+          const el = list.getScrollableNode();
+          const mark = el?.querySelector("mark.search-hit");
+          if (!el || !mark) return;
+          const top =
+            mark.getBoundingClientRect().top - el.getBoundingClientRect().top;
+          void list.scrollToOffset({
+            offset: el.scrollTop + top - el.clientHeight / 3,
+            animated: false,
+          });
+        });
+      });
+    return () => cancelAnimationFrame(raf);
+  }, [matches.first, needlesKey, sessionId]);
 
   useEffect(() => {
     if (!highlightTerm) return;
@@ -864,13 +874,12 @@ function Messages() {
   }, [highlightTerm, setHighlightTerm]);
 
   return (
-    // h-full is load-bearing: the scroll div below sizes itself with h-full,
-    // which resolves to auto (no scrolling) unless this wrapper has a height.
-    <div className="h-full pt-4">
-      {highlightTerm && matchCount > 0 && (
+    // h-full is load-bearing: the list sizes itself to this wrapper.
+    <div className="relative h-full pt-4">
+      {highlightTerm && matches.count > 0 && (
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 rounded-full bg-popover/90 backdrop-blur px-3 py-1 text-[0.6875rem] text-muted-foreground ring-1 ring-foreground/10 shadow-sm">
           <span>
-            {matchCount} match{matchCount === 1 ? "" : "es"} for “
+            {matches.count} match{matches.count === 1 ? "" : "es"} for “
             {highlightTerm}”
           </span>
           <button
@@ -882,67 +891,44 @@ function Messages() {
           </button>
         </div>
       )}
-      {/* pb-44 keeps the last message readable above the floating composer. */}
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        // Gutter reserved on both edges (see SettingsPage): a thread growing
-        // long enough to scroll doesn't shift the transcript sideways, and
-        // the column stays centered over the composer.
-        className="h-full overflow-y-auto [scrollbar-gutter:stable_both-edges] pt-4 pb-52"
-      >
-        {!loaded ? (
+      <SearchHighlight.Provider value={needles}>
+        {/* Virtualised (PARALLEL-THREADS-PR5-RENDERING.html §5a): opening a
+            Thread costs the same however long it is. One list for every
+            Thread — dataKey tells it the dataset changed on a switch. */}
+        <LegendList
+          ref={listRef}
+          data={loaded ? rows : []}
+          dataKey={activeThreadId}
+          keyExtractor={(row) => row.block.key}
+          getItemType={(row) => row.type}
+          renderItem={renderRow}
+          recycleItems
+          estimatedItemSize={96}
+          // Follows the stream (and late heights: images, mermaid, an
+          // expanding tool group) only while the view is at the end.
+          maintainScrollAtEnd
+          onScroll={onScroll}
+          ListHeaderComponent={<div className="h-4" />}
+          ListFooterComponent={<StreamingFooter />}
+          // Gutter reserved on both edges (see SettingsPage): a thread growing
+          // long enough to scroll doesn't shift the transcript sideways, and
+          // the column stays centered over the composer.
+          style={{ height: "100%", scrollbarGutter: "stable both-edges" }}
+        />
+      </SearchHighlight.Provider>
+      {!loaded ? (
+        <div className="absolute inset-x-0 top-8">
           <TranscriptSkeleton />
-        ) : (
-          items.length === 0 && <EmptyState />
-        )}
-        {/* Same max-w-3xl column as the settings page — on a wide window the
-            conversation stays a readable measure instead of stretching. */}
-        {/* Activity (tool/thinking) lines zero their own margins so consecutive
-            lines stack tight; the sibling rules then restore air at the seams:
-            a normal block after a line gets the standard mt-3, and a line
-            after a normal block (e.g. an artifact card) gets an extra mt-1 on
-            top of the card's space-y margin. */}
-        <div
-          ref={contentRef}
-          className="mx-auto w-full px-6 max-w-3xl space-y-3 [&>.text-xs]:my-0 [&>.text-xs+*]:mt-3 [&>.text-xs+.text-xs]:mt-0 [&>:not(.text-xs)+.text-xs]:mt-1"
-        >
-          {loaded &&
-            blocks.map((block, i) => (
-              <TranscriptBlock
-                key={block.key}
-                block={block}
-                interstitial={blocks[i + 1]?.kind === "activity"}
-              />
-            ))}
-          {/* Live streaming tail: the block currently being generated. The
-          complete item replaces it (store clears the buffer), so it never
-          coexists with its own final render. */}
-          {streamingThinking && (
-            <div className="text-muted-foreground/70 text-xs italic whitespace-pre-wrap line-clamp-4 max-w-[90%]">
-              {streamingThinking.slice(-600)}
-            </div>
-          )}
-          {displayedText && (
-            <div className="max-w-[90%] prose prose-sm prose-pre:bg-background">
-              <AssistantMarkdown text={displayedText} />
-            </div>
-          )}
-          <PermissionCards />
-          {runState === "running" &&
-            permissionCount === 0 &&
-            !displayedText && (
-              // Stopping lives on the composer's round stop button — no second
-              // control here, just a quiet liveness cue. Hidden while a permission
-              // card is showing (the agent is waiting on the user) and while real
-              // tokens are already streaming in. Orb + label follow what the
-              // run is doing right now (thinking / working / searching).
-              <LiveCueChip items={items} />
-            )}
         </div>
-      </div>
+      ) : (
+        items.length === 0 && (
+          <div className="absolute inset-x-0 top-8 bottom-52">
+            <EmptyState />
+          </div>
+        )
+      )}
       {/* Floats over the scroll area, above the composer glass — sibling of
-          the scroll div so it doesn't scroll away with the content. Always
+          the list so it doesn't scroll away with the content. Always
           mounted and shown/hidden by transition rather than conditional
           render, so scrolling back down mid-fade simply reverses it; inert
           while hidden so the invisible pill is neither clickable nor
