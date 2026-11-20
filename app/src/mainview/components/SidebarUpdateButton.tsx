@@ -125,8 +125,8 @@ function UpdateIcon({
 }) {
   if (icon === "available")
     return (
-      <span className="relative grid size-4 place-items-center">
-        <Download className="size-4" />
+      <span className="relative grid size-4.5 place-items-center">
+        <Download className="size-4.5" />
         <span
           aria-hidden
           className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-primary ring-2 ring-background"
@@ -171,15 +171,15 @@ function UpdateIcon({
             className="transition-[stroke-dashoffset] duration-300 ease-out motion-reduce:transition-none"
           />
         </svg>
-        <Download className="size-4" />
+        <Download className="size-4.5" />
       </span>
     );
   }
 
   if (icon === "downloaded")
     return (
-      <span className="relative grid size-4 place-items-center">
-        <RotateCw className="size-4" />
+      <span className="relative grid size-4.5 place-items-center">
+        <RotateCw className="size-4.5" />
         <span className="absolute -right-1 -bottom-1 grid size-2.5 place-items-center rounded-full bg-foreground text-background ring-2 ring-background">
           <Check className="size-2" strokeWidth={3} />
         </span>
@@ -189,7 +189,7 @@ function UpdateIcon({
   return (
     <RefreshCw
       className={cn(
-        "size-4",
+        "size-4.5",
         icon === "checking" && "animate-spin motion-reduce:animate-none",
       )}
     />

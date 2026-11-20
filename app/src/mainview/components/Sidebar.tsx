@@ -136,23 +136,24 @@ export function Sidebar({
             <OutboxPanel />
             {/* T3 Code-style utility row: icon buttons left, the round
                 update button right. Labels live in tooltips + aria-label.
-                Buttons are 32px squares with a 16px glyph (8px inset); -mx-2
-                and -mb-2 move the row out by that inset, so at rest the
-                glyphs sit on the cards' left/right edges, and a hovered
-                square is as far from the pane's side as from its bottom. */}
-            <div className="flex items-center gap-1 mt-1 -mx-2 -mb-2">
+                Buttons are 32px squares with an 18px glyph (7px inset);
+                -mx-1.75 and -mb-1.75 move the row out by that inset, so at
+                rest the glyphs sit on the cards' left/right edges, and a
+                hovered square is as far from the pane's side as from its
+                bottom. */}
+            <div className="flex items-center gap-1 mt-1 -mx-1.75 -mb-1.75">
               <FooterIconButton
                 label="Knowledge"
                 onClick={() => useStore.getState().setKnowledgeOpen(true)}
               >
-                <Brain />
+                <Brain className="size-4.5" />
               </FooterIconButton>
               <FooterIconButton
                 label="Settings"
                 onPointerDown={() => perf.markClick("settings")}
                 onClick={() => useStore.getState().setSettingsOpen(true)}
               >
-                <Settings />
+                <Settings className="size-4.5" />
               </FooterIconButton>
               <SidebarUpdateButton />
             </div>
