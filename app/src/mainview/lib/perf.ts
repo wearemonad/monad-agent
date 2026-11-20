@@ -9,7 +9,7 @@ import {
   type PerfReport,
   type RenderSample,
 } from "../../shared/perf";
-import { useStore } from "../store";
+import { activeThread, useStore } from "../store";
 
 /** Webview-side performance diagnostics (PARALLEL-THREADS-PR1-MEASURE.html §2).
  *
@@ -113,7 +113,9 @@ function threadKind(sessionId?: string, workspaceId?: string): ClickTarget {
 function reached(click: PendingClick, s: ReturnType<typeof useStore.getState>) {
   return click.target === "settings"
     ? s.settingsOpen
-    : !s.settingsOpen && s.resumeSessionId === click.sessionId;
+    : !s.settingsOpen &&
+        activeThread(s).resumeSessionId === click.sessionId &&
+        activeThread(s).loaded;
 }
 
 function checkTarget(): void {

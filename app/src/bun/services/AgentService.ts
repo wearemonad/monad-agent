@@ -298,50 +298,20 @@ export class AgentService {
    *  each carrying the same usage totals — remember the last id per run so a
    *  "usage" event fires once per API call, not once per content block. */
   private lastUsageMsgId = new Map<string, string>();
-  /** Per-run buffers coalescing stream deltas: the API emits deltas every few
-   *  tokens, and forwarding each one over the webview RPC (plus a React
-   *  render) would be ~100 messages/s. Flushed on a short timer, and always
-   *  before the block's complete event so ordering is preserved. */
-  private deltaBuffers = new Map<
-    string,
-    {
-      text: string;
-      thinking: string;
-      timer: ReturnType<typeof setTimeout> | null;
-    }
-  >();
-
-  /** Accumulate one streamed delta; schedule a flush. */
+  /** Forward one streamed delta. Coalescing happens once, for every run,
+   *  in the StreamMultiplexer the emit callback feeds (one webview message
+   *  per tick), so deltas go straight out — in order with the complete
+   *  block that follows them. */
   private queueDelta(
     runId: string,
     kind: "text" | "thinking",
     text: string,
   ): void {
-    let buf = this.deltaBuffers.get(runId);
-    if (!buf) {
-      buf = { text: "", thinking: "", timer: null };
-      this.deltaBuffers.set(runId, buf);
-    }
-    buf[kind === "text" ? "text" : "thinking"] += text;
-    buf.timer ??= setTimeout(() => this.flushDeltas(runId), 60);
-  }
-
-  private flushDeltas(runId: string): void {
-    const buf = this.deltaBuffers.get(runId);
-    if (!buf) return;
-    if (buf.timer) clearTimeout(buf.timer);
-    buf.timer = null;
-    if (buf.thinking)
-      this.emit({ kind: "thinking-delta", runId, text: buf.thinking });
-    if (buf.text) this.emit({ kind: "text-delta", runId, text: buf.text });
-    buf.text = "";
-    buf.thinking = "";
-  }
-
-  private dropDeltas(runId: string): void {
-    const buf = this.deltaBuffers.get(runId);
-    if (buf?.timer) clearTimeout(buf.timer);
-    this.deltaBuffers.delete(runId);
+    this.emit({
+      kind: kind === "text" ? "text-delta" : "thinking-delta",
+      runId,
+      text,
+    });
   }
 
   constructor(
@@ -552,7 +522,6 @@ export class AgentService {
     if (fake) {
       fake.stop();
       this.fakeRuns.delete(runId);
-      this.dropDeltas(runId);
       this.emit({
         kind: "run-error",
         runId,
@@ -569,7 +538,6 @@ export class AgentService {
       if (s.turnRunId !== runId || s.abortedTurn) continue;
       this.broker.denyAllForRun(runId);
       s.abortedTurn = true;
-      this.dropDeltas(runId);
       // The UI is released immediately; the turn's result (which the CLI
       // still emits after the interrupt) is swallowed in handleLiveMessage.
       this.emit({
@@ -600,7 +568,7 @@ export class AgentService {
   private fakeRuns = new Map<string, FakeAgentSession>();
 
   /** Serve an interactive run with a FakeAgentSession: deltas go through
-   *  queueDelta and complete blocks flush first, exactly like the CLI path. */
+   *  queueDelta and complete blocks follow them, exactly like the CLI path. */
   private startFakeRun(opts: {
     workspaceId: string;
     workspacePath: string;
@@ -614,10 +582,7 @@ export class AgentService {
       sessionId,
       sink: {
         delta: (kind, text) => this.queueDelta(runId, kind, text),
-        emit: (event) => {
-          this.flushDeltas(runId);
-          this.emit(event);
-        },
+        emit: (event) => this.emit(event),
       },
       onStep: (answer) =>
         this.oneShot.fake?.onStep?.(
@@ -630,7 +595,6 @@ export class AgentService {
     this.fakeRuns.set(runId, session);
     void session.done.then(() => {
       if (this.fakeRuns.get(runId) === session) this.fakeRuns.delete(runId);
-      this.dropDeltas(runId);
     });
     return runId;
   }
@@ -920,9 +884,7 @@ export class AgentService {
         detail: `live session ended: ${friendly(error).slice(0, 120)}`,
       });
     }
-    // Un-emitted deltas from a dead session must not fire into a later state.
     for (const id of s.runIds) {
-      this.dropDeltas(id);
       this.lastUsageMsgId.delete(id);
     }
     // Settle any permission request still outstanding. Without this, a
@@ -995,7 +957,6 @@ export class AgentService {
       }
       case "result": {
         const runId = s.turnRunId;
-        if (runId) this.flushDeltas(runId);
         // Re-tag at the end of every turn (see markOwned): the turn's output
         // may have pushed the init-time tag out of the SDK's tail window.
         // The owner record is written synchronously, before run-finished
@@ -1527,8 +1488,6 @@ export class AgentService {
           break;
       }
       this.runAuth.delete(runId);
-      // Un-emitted deltas from a dead run must not fire into a later state.
-      this.dropDeltas(runId);
       this.lastUsageMsgId.delete(runId);
       // Settle any permission request still outstanding for this run. Without
       // this, a run that dies abnormally (SDK crash, subprocess exit) leaves a
@@ -1594,7 +1553,6 @@ export class AgentService {
         }
         break;
       case "result": {
-        this.flushDeltas(runId);
         // An API/network failure inside the CLI is NOT thrown — it arrives as
         // a result with is_error (or a non-success subtype). Carry it on the
         // event so background owners don't treat a dead run as delivered.
@@ -1641,9 +1599,6 @@ export class AgentService {
         break;
       }
       case "assistant":
-        // Complete blocks follow their own deltas — flush so the live tail is
-        // current before the authoritative text/thinking event replaces it.
-        this.flushDeltas(runId);
         // Context accounting: input + cache + output of the latest top-level
         // API call is the conversation's current footprint in the model's
         // context window. Subagents run in their own windows — skip them.

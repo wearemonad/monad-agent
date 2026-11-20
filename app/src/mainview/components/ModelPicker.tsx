@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Search, Star } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ProviderId } from "../../shared/ipc";
-import { useStore } from "../store";
+import { useActiveThread, useStore } from "../store";
 import { perf } from "../lib/perf";
 import {
   choiceKey,
@@ -35,7 +35,7 @@ export function ModelPicker() {
   const setModel = useStore((s) => s.setModel);
   const settings = useStore((s) => s.settings);
   const ollama = useStore((s) => s.ollama);
-  const resumeSessionId = useStore((s) => s.resumeSessionId);
+  const resumeSessionId = useActiveThread((t) => t.resumeSessionId);
   const sessions = useStore((s) => s.sessions);
 
   const [open, setOpen] = useState(false);

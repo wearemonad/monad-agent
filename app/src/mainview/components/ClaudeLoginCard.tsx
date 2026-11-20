@@ -7,7 +7,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { api } from "../rpc";
-import { useStore } from "../store";
+import { useActiveThread, useStore } from "../store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -199,7 +199,7 @@ export function ClaudeLoginCard({
   retryPrompt?: string;
 }) {
   const [signedIn, setSignedIn] = useState(false);
-  const runState = useStore((s) => s.runState);
+  const runState = useActiveThread((t) => t.runState);
 
   return (
     <Alert variant={signedIn ? "success" : "destructive"}>

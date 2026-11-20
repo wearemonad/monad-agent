@@ -22,7 +22,7 @@ import {
 import { orbFrameUrl } from "../lib/orbFrame";
 import { useResolvedScheme } from "../lib/theme";
 import type { ContentHit, SessionKind, SessionSummary } from "../../shared/ipc";
-import { useStore } from "../store";
+import { useActiveThread, useStore } from "../store";
 import {
   groupThreads,
   type SectionId,
@@ -274,7 +274,7 @@ let threadEntrancePlayed = false;
 
 function ThreadList() {
   const sessions = useStore((s) => s.sessions);
-  const resumeSessionId = useStore((s) => s.resumeSessionId);
+  const resumeSessionId = useActiveThread((t) => t.resumeSessionId);
   const runningSessions = useStore((s) => s.runningSessions);
   const permissionQueue = useStore((s) => s.permissionQueue);
   const backgroundRun = useStore((s) => s.backgroundRun);

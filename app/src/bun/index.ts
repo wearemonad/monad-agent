@@ -31,6 +31,7 @@ import type {
 } from "../shared/ipc";
 import { isOpenAIProvider, jobKind } from "../shared/ipc";
 import { AgentService } from "./services/AgentService";
+import { StreamMultiplexer } from "./services/StreamMultiplexer";
 import { CodexAgentService, codexHome } from "./services/CodexAgentService";
 import { CodexThreadStore } from "./services/CodexThreadStore";
 import { ClaudeLogin } from "./services/ClaudeLogin";
@@ -388,6 +389,10 @@ let windowReady = false;
 const send = () =>
   windowReady ? (mainWindow.webview.rpc as any)?.send : undefined;
 
+/** Every interactive run's stream, one streamBatch message per 50 ms tick
+ *  whatever the number of Threads streaming (PARALLEL-THREADS-PR4 §4a). */
+const streamOut = new StreamMultiplexer((batch) => send()?.streamBatch(batch));
+
 /** Last list pushed per sidebar channel (as JSON), for the active workspace:
  *  an unchanged list isn't re-sent. Every push of these channels goes through
  *  here, and getSidebarSnapshot records what it returned. */
@@ -402,9 +407,15 @@ let pendingRowWorkspaces: Set<string> | "all" | null = null;
 
 // Waits for answers on the app runtime (declared below; only used once a
 // run asks for permission).
-const broker = new PermissionBroker((req) => send()?.permissionRequest(req), {
-  run: (effect) => appRuntime.runPromise(effect),
-});
+// The stream before a permission request goes out first: the card must
+// follow the tool call it asks about.
+const broker = new PermissionBroker(
+  (req) => {
+    streamOut.flush();
+    send()?.permissionRequest(req);
+  },
+  { run: (effect) => appRuntime.runPromise(effect) },
+);
 
 /** Recursively substitute ${VAR} in string values (keys/structure untouched). */
 function expandEnvStrings(
@@ -1183,7 +1194,7 @@ function routeAgentEvent(event: AgentStreamEvent): void {
       }
     }
   }
-  send()?.streamEvent(event);
+  streamOut.push(event);
 }
 
 /** Extra system-prompt content per run: persona, working memory, skill and
@@ -2011,6 +2022,11 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
       },
       abortRun: ({ runId }) => ({
         ok: agent.abortRun(runId) || codexAgent.abortRun(runId),
+      }),
+      liveRuns: ({ runIds }) => ({
+        live: runIds.filter(
+          (r) => agent.isTurnActive(r) || codexAgent.isTurnActive(r),
+        ),
       }),
       prewarm: ({ resumeSessionId, model, provider, runOptions }) => {
         try {

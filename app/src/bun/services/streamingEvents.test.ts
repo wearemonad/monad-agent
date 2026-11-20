@@ -15,7 +15,6 @@ const delta = (d: Record<string, unknown>, parent: string | null = null) => ({
   parent_tool_use_id: parent,
   event: { type: "content_block_delta", index: 0, delta: d },
 });
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 beforeEach(() => {
   events = [];
@@ -29,28 +28,20 @@ beforeEach(() => {
 });
 
 describe("stream deltas", () => {
-  test("text deltas coalesce into one event per flush window", async () => {
-    normalize(delta({ type: "text_delta", text: "Hel" }));
-    normalize(delta({ type: "text_delta", text: "lo " }));
-    normalize(delta({ type: "text_delta", text: "world" }));
-    expect(events).toHaveLength(0); // nothing until the timer fires
-    await sleep(90);
-    expect(events).toEqual([
-      { kind: "text-delta", runId: "run1", text: "Hello world" },
-    ]);
-  });
-
-  test("thinking deltas emit separately from text deltas", async () => {
+  // Coalescing is the StreamMultiplexer's job (one batch per tick for every
+  // run); AgentService forwards each delta as it comes, in order.
+  test("deltas go straight out, in order", () => {
     normalize(delta({ type: "thinking_delta", thinking: "hmm " }));
-    normalize(delta({ type: "text_delta", text: "Answer" }));
-    await sleep(90);
+    normalize(delta({ type: "text_delta", text: "Hel" }));
+    normalize(delta({ type: "text_delta", text: "lo" }));
     expect(events).toEqual([
       { kind: "thinking-delta", runId: "run1", text: "hmm " },
-      { kind: "text-delta", runId: "run1", text: "Answer" },
+      { kind: "text-delta", runId: "run1", text: "Hel" },
+      { kind: "text-delta", runId: "run1", text: "lo" },
     ]);
   });
 
-  test("the complete assistant message flushes pending deltas FIRST", () => {
+  test("the complete assistant message follows its deltas", () => {
     normalize(delta({ type: "text_delta", text: "partial" }));
     normalize({
       type: "assistant",
@@ -66,14 +57,6 @@ describe("stream deltas", () => {
     normalize(
       delta({ type: "text_delta", text: "subagent noise" }, "toolu_123"),
     );
-    await sleep(90);
-    expect(events).toHaveLength(0);
-  });
-
-  test("dropDeltas cancels un-emitted buffers (aborted run)", async () => {
-    normalize(delta({ type: "text_delta", text: "doomed" }));
-    (agent as any).dropDeltas("run1");
-    await sleep(90);
     expect(events).toHaveLength(0);
   });
 });

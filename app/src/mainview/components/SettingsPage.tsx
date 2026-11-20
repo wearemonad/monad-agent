@@ -143,7 +143,7 @@ import {
   useScheme,
   useThemeId,
 } from "../lib/theme";
-import { useStore } from "../store";
+import { useActiveThread, useStore } from "../store";
 import { api } from "../rpc";
 import { onEnter } from "../util";
 import {
@@ -2312,7 +2312,7 @@ const JOB_PRESETS = [
 ];
 
 function JobsRow({ ws }: { ws: WorkspaceInfo }) {
-  const runState = useStore((s) => s.runState);
+  const runState = useActiveThread((t) => t.runState);
   // "Run now" streams into the OPEN thread, so only that thread being busy
   // blocks it — background runs and parallel threads don't.
   const busy = runState === "running";

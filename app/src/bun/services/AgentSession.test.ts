@@ -167,18 +167,20 @@ test("Stop releases the turn at once, swallows its late output, and the process 
   ]);
 });
 
-test("a process that dies mid-turn ends the turn with one error and no stale deltas", async () => {
+test("a process that dies mid-turn ends the turn with one error and no deltas after it", async () => {
   send("Hello", "t1");
   await settle();
   const cli = sdk.processes[0]!;
   cli.init("s1");
   cli.delta("Hal");
   cli.crash();
-  await Bun.sleep(80); // past the 60 ms delta flush
+  await settle();
   expect(terminal("t1")).toEqual([
     { kind: "run-error", runId: "t1", error: "CLI exited with code 1" },
   ]);
-  expect(of("t1").some((e) => e.kind === "text-delta")).toBe(false);
+  const t1 = of("t1");
+  const end = t1.findIndex((e) => e.kind === "run-error");
+  expect(t1.slice(end + 1)).toEqual([]);
 
   send("Again", "t2", { resumeSessionId: "s1" });
   await settle();

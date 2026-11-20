@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { GmailDraft, OutboxPreview } from "../../shared/ipc";
-import { useStore } from "../store";
+import { useActiveThread, useStore } from "../store";
 import { api } from "../rpc";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,7 +35,7 @@ function base64ToBlob(b64: string, type: string): Blob {
 export function OutboxPanel() {
   const files = useStore((s) => s.outboxFiles);
   const workspaces = useStore((s) => s.workspaces);
-  const runState = useStore((s) => s.runState);
+  const runState = useActiveThread((t) => t.runState);
   const draftsBump = useStore((s) => s.gmailDraftsBump);
   const active = workspaces.find((w) => w.active);
   const connected = !!active?.drive;
