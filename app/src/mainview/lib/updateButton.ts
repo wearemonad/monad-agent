@@ -17,12 +17,44 @@ export type UpdateButtonInput = {
   /** The updater reported an available update at some point this session. */
   sawAvailable: boolean;
   /** Result of the last manual check. */
-  checkResult: {
-    updateAvailable: boolean;
-    version: string;
-    error: string;
-  } | null;
+  checkResult: UpdateCheckResult | null;
 };
+
+/** The updateCheck RPC's response. */
+export type UpdateCheckResult = {
+  updateAvailable: boolean;
+  version: string;
+  error: string;
+};
+
+/** The button's own flags that the updater's status pushes settle. */
+export type UpdateFlags = Pick<
+  UpdateButtonInput,
+  "downloading" | "installing" | "sawAvailable"
+>;
+
+/** How one updater status changes the button's flags. Electrobun reports a
+ *  restart vetoed by a before-quit handler as "idle", and a download or
+ *  re-check that found nothing to do as "no-update" — both must release the
+ *  spinner, or the button sits disabled until the app restarts. */
+export function applyUpdateStatus(
+  flags: UpdateFlags,
+  status: string,
+): UpdateFlags {
+  switch (status) {
+    case "update-available":
+      return { ...flags, sawAvailable: true };
+    case "download-complete":
+      return { ...flags, downloading: false };
+    case "error":
+    case "idle":
+      return { ...flags, downloading: false, installing: false };
+    case "no-update":
+      return { downloading: false, installing: false, sawAvailable: false };
+    default:
+      return flags;
+  }
+}
 
 export type UpdateButtonIcon =
   | "idle"
@@ -46,7 +78,7 @@ export type UpdateButtonState = {
  *  download/apply is running. "check-complete", "update-available" and
  *  "download-complete" wait on the user — counting them as busy once pinned
  *  the old button to a disabled "Updating…" forever. */
-const RESTING_STATUSES = [
+export const RESTING_STATUSES = [
   "idle",
   "checking",
   "check-complete",
@@ -93,7 +125,9 @@ export function resolveUpdateButton(
 
   const status = input.status?.status;
 
-  if (input.installing || status === "complete")
+  // Only while we're installing: Electrobun also replays "complete" after a
+  // successful relaunch, which must read as idle.
+  if (input.installing)
     return {
       ...IDLE,
       icon: "downloaded",
@@ -135,7 +169,9 @@ export function resolveUpdateButton(
       icon: "available",
       action: "download",
       emphasized: true,
-      tooltip: "Download failed. Click to retry.",
+      // Download or install — the status doesn't say which; re-downloading
+      // first is the safe retry for both.
+      tooltip: "Update failed. Click to retry.",
     };
 
   const version = input.checkResult?.updateAvailable

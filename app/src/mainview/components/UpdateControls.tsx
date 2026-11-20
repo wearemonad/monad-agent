@@ -3,6 +3,11 @@ import { Loader2 } from "lucide-react";
 import { useStore } from "../store";
 import { api } from "../rpc";
 import { cn } from "@/lib/utils";
+import {
+  applyUpdateStatus,
+  RESTING_STATUSES,
+  type UpdateFlags,
+} from "../lib/updateButton";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -14,21 +19,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-
-/** Updater statuses that are NOT an update in flight — everything else means
- *  work is happening and the button should spin. "check-complete",
- *  "update-available" and "download-complete" are resting states waiting on
- *  the user, not progress: counting them as busy pinned the button to a
- *  disabled "Updating…" forever, with no way to move forward. */
-const RESTING_STATUSES = [
-  "idle",
-  "check-complete",
-  "no-update",
-  "update-available",
-  "download-complete",
-  "complete",
-  "error",
-];
 
 /** T3-style two-phase update controls: Check → Download (spinner + progress %)
  *  → Restart & install (confirmation dialog) → app relaunches.
@@ -43,15 +33,18 @@ export function UpdateControls({ className }: { className?: string }) {
   const settings = useStore((s) => s.settings);
   const updateStatus = useStore((s) => s.updateStatus);
   const [checking, setChecking] = useState(false);
-  // Bridges the gap between clicking Download/Install and the first status
-  // push arriving, and papers over the "update-available" re-emit that
-  // Electrobun's downloadUpdate() fires mid-download when it re-checks.
-  const [downloading, setDownloading] = useState(false);
-  const [installing, setInstalling] = useState(false);
+  // `downloading`/`installing` bridge the gap between a click and the first
+  // status push (and the update-available re-emit downloadUpdate() fires
+  // mid-way). `sawAvailable` survives later statuses so Download can come
+  // back as a retry — T3's errorContext model. Pushes settle them via
+  // applyUpdateStatus, shared with the sidebar button.
+  const [{ downloading, installing, sawAvailable }, setFlags] =
+    useState<UpdateFlags>({
+      downloading: false,
+      installing: false,
+      sawAvailable: false,
+    });
   const [confirmOpen, setConfirmOpen] = useState(false);
-  // Availability survives later statuses (download errors, etc.) so the
-  // Download button can come back as a retry — T3's errorContext model.
-  const [sawAvailable, setSawAvailable] = useState(false);
   const [result, setResult] = useState<{
     updateAvailable: boolean;
     error: string;
@@ -63,11 +56,9 @@ export function UpdateControls({ className }: { className?: string }) {
   const errored = status === "error";
 
   useEffect(() => {
-    if (status === "update-available") setSawAvailable(true);
-    if (status === "download-complete" || status === "error")
-      setDownloading(false);
-    if (status === "error") setInstalling(false);
-  }, [status]);
+    if (updateStatus)
+      setFlags((f) => applyUpdateStatus(f, updateStatus.status));
+  }, [updateStatus]);
 
   if (!settings) return null;
 
@@ -84,13 +75,13 @@ export function UpdateControls({ className }: { className?: string }) {
   };
 
   const download = () => {
-    setDownloading(true);
+    setFlags((f) => ({ ...f, downloading: true }));
     void api.updateDownload();
   };
 
   const install = () => {
     setConfirmOpen(false);
-    setInstalling(true);
+    setFlags((f) => ({ ...f, installing: true }));
     void api.updateInstall();
   };
 

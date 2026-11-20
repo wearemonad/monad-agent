@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { resolveUpdateButton, type UpdateButtonInput } from "./updateButton";
+import {
+  applyUpdateStatus,
+  resolveUpdateButton,
+  type UpdateButtonInput,
+  type UpdateFlags,
+} from "./updateButton";
 
 const base: UpdateButtonInput = {
   channel: "stable",
@@ -156,23 +161,75 @@ describe("resolveUpdateButton", () => {
       status: { status: "error", message: "network down" },
     });
     expect(s).toMatchObject({ icon: "available", action: "download" });
-    expect(s.tooltip).toBe("Download failed. Click to retry.");
+    expect(s.tooltip).toBe("Update failed. Click to retry.");
   });
 
   test("once install is confirmed the button waits for the relaunch", () => {
-    for (const status of ["download-complete", "complete"]) {
-      const s = resolveUpdateButton({
+    const s = resolveUpdateButton({
+      ...base,
+      sawAvailable: true,
+      installing: true,
+      status: { status: "download-complete", message: "" },
+    });
+    expect(s).toMatchObject({
+      icon: "downloaded",
+      action: "none",
+      disabled: true,
+      tooltip: "Installing update…",
+    });
+  });
+});
+
+describe("applyUpdateStatus", () => {
+  const busy: UpdateFlags = {
+    downloading: true,
+    installing: true,
+    sawAvailable: true,
+  };
+
+  test("a restart vetoed by a before-quit handler (idle) un-sticks the button", () => {
+    expect(applyUpdateStatus(busy, "idle")).toEqual({
+      downloading: false,
+      installing: false,
+      sawAvailable: true,
+    });
+  });
+
+  test("no-update forgets an update seen earlier", () => {
+    expect(applyUpdateStatus(busy, "no-update")).toEqual({
+      downloading: false,
+      installing: false,
+      sawAvailable: false,
+    });
+  });
+
+  test("an announced update is remembered, a finished download stops the ring", () => {
+    const none = { downloading: false, installing: false, sawAvailable: false };
+    expect(applyUpdateStatus(none, "update-available").sawAvailable).toBe(true);
+    expect(
+      applyUpdateStatus({ ...none, downloading: true }, "download-complete")
+        .downloading,
+    ).toBe(false);
+  });
+});
+
+describe("resolveUpdateButton edge flows", () => {
+  test("'complete' replayed after a relaunch reads as idle, not installing", () => {
+    expect(
+      resolveUpdateButton({
         ...base,
-        sawAvailable: true,
-        installing: status === "download-complete",
-        status: { status, message: "" },
-      });
-      expect(s).toMatchObject({
-        icon: "downloaded",
-        action: "none",
-        disabled: true,
-        tooltip: "Installing update…",
-      });
-    }
+        status: { status: "complete", message: "" },
+      }),
+    ).toMatchObject({ icon: "idle", action: "check" });
+  });
+
+  test("a failed install doesn't blame the download", () => {
+    const s = resolveUpdateButton({
+      ...base,
+      sawAvailable: true,
+      status: { status: "error", message: "install failed" },
+    });
+    expect(s).toMatchObject({ icon: "available", action: "download" });
+    expect(s.tooltip).toBe("Update failed. Click to retry.");
   });
 });

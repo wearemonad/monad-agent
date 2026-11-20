@@ -257,7 +257,11 @@ if (fakeAgentThreads) {
   );
 }
 
+/** Last status the updater emitted; updateDownload reads it to tell a
+ *  download that silently did nothing from one that failed. */
+let lastUpdaterStatus = "";
 Updater.onStatusChange((entry) => {
+  lastUpdaterStatus = entry.status;
   // Electrobun words this status with build hashes ("Update available:
   // 14a2shhb → o96s7fsf"); by the time it's emitted checkForUpdate() has
   // already parsed update.json, so swap in the human-readable version.
@@ -2522,6 +2526,18 @@ const rpc = BrowserView.defineRPC<MonadRPC>({
         void (async () => {
           try {
             await Updater.downloadUpdate();
+            // downloadUpdate() returns without a status when there turns out
+            // to be nothing to fetch (already on the checked build). Say so,
+            // or the UI's download ring spins forever.
+            if (
+              !Updater.updateInfo()?.updateReady &&
+              lastUpdaterStatus !== "error"
+            ) {
+              send()?.updateStatus({
+                status: "no-update",
+                message: "Already on the latest version",
+              });
+            }
             // Downloads take a while — ping a user who switched away that the
             // install button is waiting. Quiet when focused: the Settings /
             // sidebar button already flipped to "Restart & install".

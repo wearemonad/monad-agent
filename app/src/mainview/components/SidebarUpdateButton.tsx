@@ -4,8 +4,11 @@ import { useStore } from "../store";
 import { api } from "../rpc";
 import { cn } from "@/lib/utils";
 import {
-  type UpdateButtonIcon,
+  applyUpdateStatus,
   resolveUpdateButton,
+  type UpdateButtonIcon,
+  type UpdateCheckResult,
+  type UpdateFlags,
 } from "../lib/updateButton";
 import { InstallUpdateDialog } from "./UpdateControls";
 import {
@@ -22,25 +25,25 @@ export function SidebarUpdateButton() {
   const settings = useStore((s) => s.settings);
   const updateStatus = useStore((s) => s.updateStatus);
   const [checking, setChecking] = useState(false);
-  // Bridges the gap between clicking Download and the first progress push,
-  // and covers the update-available re-emit downloadUpdate() fires mid-way.
-  const [downloading, setDownloading] = useState(false);
-  const [installing, setInstalling] = useState(false);
-  const [sawAvailable, setSawAvailable] = useState(false);
+  // `downloading` bridges the gap between clicking Download and the first
+  // status push, and covers the update-available re-emit downloadUpdate()
+  // fires mid-way; each push settles the flags (see applyUpdateStatus).
+  const [flags, setFlags] = useState<UpdateFlags>({
+    downloading: false,
+    installing: false,
+    sawAvailable: false,
+  });
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [checkResult, setCheckResult] = useState<{
-    updateAvailable: boolean;
-    version: string;
-    error: string;
-  } | null>(null);
+  const [checkResult, setCheckResult] = useState<UpdateCheckResult | null>(
+    null,
+  );
 
-  const status = updateStatus?.status;
+  // Keyed on the push itself, not its status string: a second "idle" or
+  // "error" in a row must still settle the flags.
   useEffect(() => {
-    if (status === "update-available") setSawAvailable(true);
-    if (status === "download-complete" || status === "error")
-      setDownloading(false);
-    if (status === "error") setInstalling(false);
-  }, [status]);
+    if (updateStatus)
+      setFlags((f) => applyUpdateStatus(f, updateStatus.status));
+  }, [updateStatus]);
 
   if (!settings) return null;
 
@@ -49,9 +52,7 @@ export function SidebarUpdateButton() {
     updatesConfigured: settings.updatesConfigured,
     status: updateStatus,
     checking,
-    downloading,
-    installing,
-    sawAvailable,
+    ...flags,
     checkResult,
   });
 
@@ -62,12 +63,12 @@ export function SidebarUpdateButton() {
       try {
         const r = await api.updateCheck();
         setCheckResult(r);
-        if (r.updateAvailable) setSawAvailable(true);
+        if (r.updateAvailable) setFlags((f) => ({ ...f, sawAvailable: true }));
       } finally {
         setChecking(false);
       }
     } else if (view.action === "download") {
-      setDownloading(true);
+      setFlags((f) => ({ ...f, downloading: true }));
       void api.updateDownload();
     } else if (view.action === "install") {
       setConfirmOpen(true);
@@ -104,7 +105,7 @@ export function SidebarUpdateButton() {
         onOpenChange={setConfirmOpen}
         onConfirm={() => {
           setConfirmOpen(false);
-          setInstalling(true);
+          setFlags((f) => ({ ...f, installing: true }));
           void api.updateInstall();
         }}
       />
