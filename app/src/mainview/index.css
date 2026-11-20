@@ -295,12 +295,13 @@
   @apply rtl:-scale-x-100;
 }
 
-/* Search-hit highlighting in the conversation (CSS Custom Highlight API —
-   ranges registered by ChatPane, no DOM mutation). Only a handful of
-   properties apply inside ::highlight; background + color is all we need. */
-::highlight(search-term) {
+/* Search-hit highlighting in the conversation. The transcript is
+   virtualised, so hits are marked while rendering (searchHighlight.ts)
+   rather than found in the DOM. */
+mark.search-hit {
   background-color: var(--highlight);
   color: var(--highlight-foreground);
+  border-radius: 2px;
 }
 
 /* Sidebar thread rows' first-load entrance, applied per row with a small

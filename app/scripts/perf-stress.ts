@@ -4,7 +4,13 @@
  *  streaming Threads by default) and MONAD_PERF_STRESS, which has the webview
  *  click between Threads and Settings every 2 s for 3 minutes. Then prints
  *  the click-to-paint and lag summary. Manual, not run in CI — it needs a
- *  desktop session. See internal/PARALLEL-THREADS-PR1-MEASURE.html §4. */
+ *  desktop session. See internal/PARALLEL-THREADS-PR1-MEASURE.html §4.
+ *
+ *  The PR 5 targets size the fake Threads through the environment:
+ *    MONAD_FAKE_MESSAGES=320 MONAD_FAKE_ANSWER_CHARS=10000 MONAD_FAKE_IDLE=4 \
+ *      bun run perf:stress 120 10
+ *  — 320-message Threads, 10 000-character streamed answers, and four idle
+ *  fake Threads opened cold on every visit (see src/bun/index.ts). */
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";

@@ -795,6 +795,10 @@ export type MonadRPC = {
           /** The largest existing Threads of each workspace. */
           idleThreads: HarnessThread[];
           stress?: { durationMs: number; everyMs: number };
+          /** The idle Threads are fake (MONAD_FAKE_IDLE): drop each from
+           *  memory, and empty the render cache, before opening it — so
+           *  every idle click is a cold open. */
+          coldIdle?: boolean;
         };
       };
       /** perf:stress finished clicking: print the report and quit. */

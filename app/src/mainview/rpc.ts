@@ -11,6 +11,7 @@ import { choiceKey, controlsFor, resolveRunOptions } from "./lib/models";
 import { bytesToBase64 } from "./util";
 import { forwardConsole } from "./lib/consoleForward";
 import { zoomIn, zoomOut, zoomReset } from "./lib/zoom";
+import { clearMarkdownCache } from "./lib/markdownCache";
 import { perf } from "./lib/perf";
 import { createMessageHandlers } from "./messageHandlers";
 
@@ -756,7 +757,14 @@ async function runDevHarness(): Promise<void> {
     turn[name] = (turn[name] ?? -1) + 1;
     return list[turn[name] % list.length];
   };
+  const cold = new Set(
+    harness.coldIdle ? idleThreads.map((t) => t.sessionId) : [],
+  );
   const open = async (t: HarnessThread) => {
+    if (cold.has(t.sessionId)) {
+      useStore.getState().dropThreadForSession(t.sessionId);
+      clearMarkdownCache();
+    }
     perf.markClick("thread", t.sessionId, t.workspaceId);
     await api.openThread(t.workspaceId, t.sessionId);
   };
@@ -794,9 +802,16 @@ async function runDevHarness(): Promise<void> {
       return;
     }
     await steps[n++ % steps.length]();
-    setTimeout(() => void step(), stress.everyMs);
+    schedule();
   };
-  setTimeout(() => void step(), stress.everyMs);
+  // Never wait past the end: a click interval longer than the run (to
+  // measure streaming alone) still ends it on time.
+  const schedule = () =>
+    setTimeout(
+      () => void step(),
+      Math.min(stress.everyMs, Math.max(0, end - Date.now())),
+    );
+  schedule();
 }
 // After the first sidebar load has settled.
 setTimeout(() => void runDevHarness(), 3_000);

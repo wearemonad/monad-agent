@@ -33,6 +33,9 @@ export class FakeAgentSession {
       tickMs?: number;
       /** A tool call (and its result) at most this often. Default 4 s. */
       toolEveryMs?: number;
+      /** Pad each answer to at least this many characters (more of the
+       *  same sections) — long answers for the streaming targets. */
+      answerChars?: number;
       /** Finish after this many steps; omit to stream until stopped. */
       maxSteps?: number;
       /** After each step, with that step's answer (to grow the session file). */
@@ -59,7 +62,7 @@ export class FakeAgentSession {
       if (!(await this.stream("thinking", thinking))) return;
       sink.emit({ kind: "thinking", runId, text: thinking });
 
-      const answer = answerFor(step);
+      const answer = answerFor(step, this.opts.answerChars);
       if (!(await this.stream("text", answer))) return;
       sink.emit({ kind: "text", runId, text: answer });
       sink.emit({ kind: "usage", runId, contextTokens: 20_000 + step * 900 });
@@ -146,13 +149,26 @@ const TOOLS = [
 ];
 
 /** A markdown answer — paragraphs, a table, a code fence, a list — varied a
- *  little per step so consecutive blocks differ. */
-function answerFor(step: number): string {
+ *  little per step so consecutive blocks differ, repeated (as more sections)
+ *  until it is at least `minChars` long. */
+function answerFor(step: number, minChars = 0): string {
+  const one = section(step);
+  const parts = [one];
+  let length = one.length;
+  for (let k = 1; length < minChars; k++) {
+    const more = section(step, k);
+    parts.push(more);
+    length += more.length + 2;
+  }
+  return parts.join("\n\n");
+}
+
+function section(step: number, part = 0): string {
   const n = step + 1;
   return [
-    `## Step ${n}: what the numbers say`,
+    `## Step ${n}${part ? `.${part}` : ""}: what the numbers say`,
     "",
-    `Here is the breakdown for pass ${n}. Revenue is up across the board, but **support load** grew faster than headcount, which is the thing to watch next quarter.`,
+    `Here is the breakdown for pass ${n}${part ? `, section ${part}` : ""}. Revenue is up across the board, but **support load** grew faster than headcount, which is the thing to watch next quarter.`,
     "",
     "| Area | Q2 | Q3 | Change |",
     "| ---- | -- | -- | ------ |",
@@ -169,6 +185,6 @@ function answerFor(step: number): string {
     "",
     "- Hire one more support engineer before the January renewals.",
     "- Move the onboarding FAQ into the help centre to deflect tickets.",
-    `- Re-run this comparison after the ${n % 2 ? "board" : "team"} meeting.`,
+    `- Re-run this comparison after the ${n % 2 ? "board" : "team"} meeting${part ? ` (part ${part})` : ""}.`,
   ].join("\n");
 }

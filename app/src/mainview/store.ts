@@ -306,6 +306,8 @@ type MonadState = {
   setModel: (m: string, provider?: ProviderId | null) => void;
   setRunOptions: (key: string, patch: RunOptions) => void;
   setComposerDraft: (t: string) => void;
+  /** Remember where a Thread's transcript was scrolled (null: at the end). */
+  setScrollOffset: (threadId: string, offset: number | null) => void;
   setSkills: (s: SkillInfo[]) => void;
   togglePin: (sessionId: string) => void;
   toggleSection: (id: SectionId) => void;
@@ -946,6 +948,14 @@ export const useStore = create<MonadState>((set, get) => ({
   },
   setComposerDraft: (composerDraft) =>
     set((s) => patchActive(s, { composerDraft })),
+  setScrollOffset: (threadId, scrollOffset) =>
+    set((s) => {
+      const t = s.threads[threadId];
+      // An evicted Thread opens at the end anyway; an unchanged offset
+      // keeps the Thread's identity.
+      if (!t || t.scrollOffset === scrollOffset) return s;
+      return { threads: { ...s.threads, [threadId]: { ...t, scrollOffset } } };
+    }),
   setSkills: (skills) =>
     set((s) => ({ skills: keepListIfEqual(s.skills, skills, (k) => k.name) })),
   togglePin: (sessionId) =>

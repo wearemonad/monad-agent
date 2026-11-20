@@ -153,6 +153,23 @@ describe("switching Threads", () => {
     expect(t.items).toEqual(history);
     expect(t.contextUsage.tokens).toBe(42);
   });
+
+  test("a Thread keeps its own scroll offset across switches", () => {
+    tenRunning();
+    st().applyEvents(turn("run-3", "s-3", 4).slice(0, 5));
+    st().applyEvents(turn("run-5", "s-5", 4).slice(0, 5));
+    st().switchToThread("s-3");
+    const id3 = st().activeThreadId;
+    st().setScrollOffset(id3, 420);
+    st().switchToThread("s-5");
+    st().setScrollOffset(st().activeThreadId, null);
+    st().switchToThread("s-3");
+    expect(activeThread(st()).scrollOffset).toBe(420);
+    // Writing the same offset again leaves the Thread untouched.
+    const before = st().threads[id3];
+    st().setScrollOffset(id3, 420);
+    expect(st().threads[id3]).toBe(before);
+  });
 });
 
 describe("history load race", () => {
