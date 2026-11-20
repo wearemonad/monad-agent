@@ -19,8 +19,6 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { orbFrameUrl } from "../lib/orbFrame";
-import { useResolvedScheme } from "../lib/theme";
 import type { ContentHit, SessionKind, SessionSummary } from "../../shared/ipc";
 import { useActiveThread, useStore } from "../store";
 import {
@@ -68,23 +66,30 @@ const INITIAL_THREADS_SHOWN = 12;
 /** Briefings accumulate one per weekday — show the latest few. */
 const INITIAL_BRIEFINGS_SHOWN = 3;
 
-/** The working cue for a sidebar row: a still frame of the thinking orb (one
- *  shared image per theme — no canvas per working Thread) with a gentle CSS
- *  pulse that only touches transform and opacity, so it runs on the
- *  compositor. The live canvas orb stays in the open Thread's cue. */
-function SidebarOrb() {
-  const src = orbFrameUrl(20, useResolvedScheme() === "dark");
-  if (!src) return null; // no 2D canvas — the row simply shows no cue
+/** The working cue for a sidebar row, after T3 Code's: a small dashed ring
+ *  in the brand colour that turns slowly. Pure SVG + a transform-only CSS
+ *  animation (runs on the compositor), still under reduced motion. */
+function WorkingRing() {
   return (
-    <img
-      src={src}
-      width={20}
-      height={20}
-      alt=""
-      aria-hidden
-      draggable={false}
-      className="orb-pulse block shrink-0"
-    />
+    <span className="flex items-center" title="Working…">
+      <svg
+        viewBox="0 0 12 12"
+        aria-hidden
+        className="working-ring block size-3 shrink-0 text-brand"
+      >
+        <circle
+          cx="6"
+          cy="6"
+          r="5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeDasharray="2.2 2.5"
+        />
+      </svg>
+      <span className="sr-only">Working</span>
+    </span>
   );
 }
 
@@ -571,9 +576,7 @@ function ThreadSection({
           </span>
         )}
         {!expanded && status.working ? (
-          <span className="flex items-center" title="Working…">
-            <SidebarOrb />
-          </span>
+          <WorkingRing />
         ) : (
           !expanded &&
           status.unread > 0 && (
@@ -634,7 +637,7 @@ function ThreadRow({
   thread: SessionSummary;
   active: boolean;
   pinned: boolean;
-  /** A run is streaming into this thread — show the spinner. */
+  /** A run is streaming into this thread — the ring replaces the time. */
   working: boolean;
   /** The thread's run is waiting on a permission card — amber badge; opening
    *  the thread shows the card. */
@@ -769,24 +772,16 @@ function ThreadRow({
           void api.openSession(thread.sessionId);
         }}
       >
-        {/* While a run streams into this thread the spinner takes the leading
-            icon slot, replacing the kind glyph rather than sitting beside it.
-            A run paused on a permission card shows the amber badge instead;
-            an unread thread's dot also wins over the kind glyph — one slot,
-            most urgent state first. */}
+        {/* One leading slot, most urgent state first: a run paused on a
+            permission card shows the amber badge, an unread thread its dot,
+            otherwise the kind glyph. A working run shows on the right, in the
+            timestamp's place. */}
         {needsInput ? (
           <span
             className="relative shrink-0 self-center mr-1.5 text-warning"
             title="Waiting for permission — open the thread to answer"
           >
             <ShieldQuestion size={12} />
-          </span>
-        ) : working ? (
-          <span
-            className="relative shrink-0 self-center mr-1.5"
-            title="Working…"
-          >
-            <SidebarOrb />
           </span>
         ) : unread ? (
           <span
@@ -815,7 +810,15 @@ function ThreadRow({
             menuOpen ? "opacity-0" : "group-hover:opacity-0",
           )}
         >
-          {relativeTime(thread.updatedAt)}
+          {/* A working thread swaps its timestamp for the ring — "updated
+              2m ago" is meaningless while it's updating right now. */}
+          {/* A run paused on a permission card isn't working — it's waiting
+              on you, which the amber badge on the left already says. */}
+          {working && !needsInput ? (
+            <WorkingRing />
+          ) : (
+            relativeTime(thread.updatedAt)
+          )}
         </span>
         <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
           <DropdownMenuTrigger
