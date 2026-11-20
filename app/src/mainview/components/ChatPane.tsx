@@ -45,6 +45,12 @@ import { useSmoothText } from "../lib/smoothText";
 import { ActivityGroup } from "./ToolCallCard";
 import { toBlocks, type MessageBlock } from "../transcriptBlocks";
 import { type Row, rowType, searchSource, toRows } from "../transcriptRows";
+import {
+  createVisibleRowsStore,
+  type MinimapTurn,
+  minimapTurns,
+} from "../lib/transcriptMinimap";
+import { TranscriptMinimap } from "./TranscriptMinimap";
 import { ARTIFACT_ICONS } from "./ArtifactPanel";
 import { EmailDraftCard } from "./EmailDraftCard";
 import { PermissionCards } from "./PermissionCards";
@@ -794,6 +800,31 @@ function Messages() {
     return useStore.subscribe(warm);
   }, []);
 
+  // The minimap's turns, and which rows are on screen (written on scroll,
+  // read only by the rail — see createVisibleRowsStore).
+  const turns = useMemo(() => minimapTurns(rows), [rows]);
+  const [visibleRows] = useState(createVisibleRowsStore);
+  const syncVisibleRows = useCallback(() => {
+    const state = listRef.current?.getState();
+    if (state) visibleRows.set(state.start, state.end);
+  }, [visibleRows]);
+  // Rows also come and go without a scroll (a switch, history loading,
+  // streaming): re-read the range once the list has laid them out.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: rows is the trigger — the range lives in the list, not in rows.
+  useEffect(() => {
+    const raf = requestAnimationFrame(syncVisibleRows);
+    return () => cancelAnimationFrame(raf);
+  }, [rows, syncVisibleRows]);
+  const jumpToTurn = useCallback((turn: MinimapTurn) => {
+    setPinned(false);
+    void listRef.current?.scrollToIndex({
+      index: turn.rowIndex,
+      animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      // Clear of the list's 16px header so the message isn't flush to the top.
+      viewOffset: 16,
+    });
+  }, []);
+
   // At the end of the transcript: drives the scroll-to-end pill. Following
   // the stream is maintainScrollAtEnd's job, and it follows only from here.
   const [pinned, setPinned] = useState(true);
@@ -809,6 +840,9 @@ function Messages() {
   });
   useLayoutEffect(() => {
     shownThread.current = activeThreadId;
+    // The minimap's range belonged to the old list; the rows effect (one
+    // frame later) reads the new one.
+    visibleRows.reset();
     setPinned(
       (useStore.getState().threads[activeThreadId]?.scrollOffset ?? null) ===
         null,
@@ -818,7 +852,7 @@ function Messages() {
       if (last.threadId === activeThreadId)
         useStore.getState().setScrollOffset(activeThreadId, last.offset);
     };
-  }, [activeThreadId]);
+  }, [activeThreadId, visibleRows]);
 
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
@@ -830,6 +864,7 @@ function Messages() {
       offset: atEnd ? null : contentOffset.y,
     };
     setPinned(atEnd);
+    syncVisibleRows();
   };
 
   const scrollToEnd = useCallback(() => {
@@ -910,7 +945,9 @@ function Messages() {
 
   return (
     // h-full is load-bearing: the list sizes itself to this wrapper.
-    <div className="relative h-full pt-4">
+    // @container/transcript: the minimap shows for good once there's a
+    // gutter beside the column.
+    <div className="@container/transcript relative h-full pt-4">
       {highlightTerm && matches.count > 0 && (
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 rounded-full bg-popover/90 backdrop-blur px-3 py-1 text-[0.6875rem] text-muted-foreground ring-1 ring-foreground/10 shadow-sm">
           <span>
@@ -954,6 +991,14 @@ function Messages() {
           style={{ height: "100%", scrollbarGutter: "stable both-edges" }}
         />
       </SearchHighlight.Provider>
+      {loaded && (
+        <TranscriptMinimap
+          key={activeThreadId}
+          turns={turns}
+          visible={visibleRows}
+          onJump={jumpToTurn}
+        />
+      )}
       {!loaded ? (
         <div className="absolute inset-x-0 top-8">
           <TranscriptSkeleton />
