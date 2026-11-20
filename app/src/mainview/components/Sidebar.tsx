@@ -4,6 +4,7 @@ import {
   CalendarClock,
   Check,
   ChevronDown,
+  CircleCheck,
   Clock,
   MessageSquare,
   MoreHorizontal,
@@ -775,23 +776,15 @@ function ThreadRow({
           void api.openSession(thread.sessionId);
         }}
       >
-        {/* One leading slot, most urgent state first: a run paused on a
-            permission card shows the amber badge, an unread thread its dot,
-            otherwise the kind glyph. A working run shows on the right, in the
-            timestamp's place. */}
+        {/* One leading slot: a run paused on a permission card shows the
+            amber badge, otherwise the kind glyph. Working and Done show on
+            the right, in the timestamp's place. */}
         {needsInput ? (
           <span
             className="relative shrink-0 self-center mr-1.5 text-warning"
             title="Waiting for permission — open the thread to answer"
           >
             <ShieldQuestion size={12} />
-          </span>
-        ) : unread ? (
-          <span
-            className="relative shrink-0 self-center mr-2 flex items-center justify-center"
-            title="Finished — open to see the result"
-          >
-            <span className="size-1.5 rounded-full bg-brand" />
           </span>
         ) : (
           thread.kind &&
@@ -819,6 +812,16 @@ function ThreadRow({
               on you, which the amber badge on the left already says. */}
           {working && !needsInput ? (
             <WorkingRing />
+          ) : unread ? (
+            // T3 Code's "Done": finished since you last looked. Opening the
+            // thread clears unread and the time comes back.
+            <span
+              className="flex items-center gap-1 font-medium text-success"
+              title="Finished — open to see the result"
+            >
+              <CircleCheck size={12} aria-hidden />
+              Done
+            </span>
           ) : (
             relativeTime(thread.updatedAt)
           )}
