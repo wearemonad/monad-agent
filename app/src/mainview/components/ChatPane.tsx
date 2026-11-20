@@ -48,7 +48,11 @@ import { ARTIFACT_ICONS } from "./ArtifactPanel";
 import { EmailDraftCard } from "./EmailDraftCard";
 import { PermissionCards } from "./PermissionCards";
 import { MarkdownBlocks, SearchHighlight } from "./MarkdownBlocks";
-import { findSearchMatches, splitHits } from "../lib/searchHighlight";
+import {
+  findSearchMatches,
+  SEARCH_HIT_CLASS,
+  splitHits,
+} from "../lib/searchHighlight";
 import { bytesToBase64, fmtTokens } from "../util";
 import { choiceKey, contextWindowFor, isPickedModel } from "../lib/models";
 import { cn } from "@/lib/utils";
@@ -376,7 +380,7 @@ function HighlightedText({ text }: { text: string }) {
   return splitHits(text, needles).map((part, i) =>
     part.hit ? (
       // biome-ignore lint/suspicious/noArrayIndexKey: runs never reorder.
-      <mark key={i} className="search-hit">
+      <mark key={i} className={SEARCH_HIT_CLASS}>
         {part.text}
       </mark>
     ) : (
@@ -598,12 +602,18 @@ function LiveCueChip({ last }: { last: ChatItem | undefined }) {
   );
 }
 
+/** The transcript's column: the same max-w-3xl measure as the settings
+ *  page, so on a wide window the conversation stays readable. Rows, the
+ *  footer and the skeleton each sit in it (the list itself is full width,
+ *  so its scrollbar stays at the window edge). */
+const COLUMN = "mx-auto w-full px-6 max-w-3xl";
+
 /** Placeholder rows while a Thread's history loads — the click paints at
  *  once instead of waiting for the history RPC. */
 function TranscriptSkeleton() {
   return (
     <div
-      className="mx-auto w-full px-6 max-w-3xl space-y-5 pt-2"
+      className={cn(COLUMN, "space-y-5 pt-2")}
       role="status"
       aria-label="Loading thread"
     >
@@ -644,7 +654,7 @@ const StreamingFooter = memo(function StreamingFooter() {
   );
   return (
     // pb-52 keeps the last message readable above the floating composer.
-    <div className="mx-auto w-full px-6 max-w-3xl pb-52">
+    <div className={cn(COLUMN, "pb-52")}>
       {streamingThinking && (
         <div className="mt-3 text-muted-foreground/70 text-xs italic whitespace-pre-wrap line-clamp-4 max-w-[90%]">
           {streamingThinking.slice(-600)}
@@ -675,6 +685,10 @@ type RowType = "user" | "assistant" | "activity" | "card";
  *  neighbours. Rows are reused while nothing about them changes, so the list
  *  re-renders only rows that did. */
 type Row = {
+  /** Unique across Threads: block keys are positions ("item-3"), and the
+   *  one list shows every Thread — a shared key would carry one Thread's
+   *  measured height and component state into another's row. */
+  key: string;
   block: MessageBlock;
   type: RowType;
   /** Space above, in px. List items are positioned one by one, so the old
@@ -699,17 +713,19 @@ function gapAbove(prev: MessageBlock | undefined, block: MessageBlock) {
   return 12;
 }
 
-function toRows(blocks: MessageBlock[], prev: Row[]): Row[] {
+function toRows(threadId: string, blocks: MessageBlock[], prev: Row[]): Row[] {
   return blocks.map((block, i) => {
+    const key = `${threadId}:${block.key}`;
     const gap = gapAbove(blocks[i - 1], block);
     const interstitial = blocks[i + 1]?.kind === "activity";
     const old = prev[i];
     return old &&
+      old.key === key &&
       old.block === block &&
       old.gap === gap &&
       old.interstitial === interstitial
       ? old
-      : { block, type: rowType(block), gap, interstitial };
+      : { key, block, type: rowType(block), gap, interstitial };
   });
 }
 
@@ -723,11 +739,7 @@ function renderRow({ item: row }: LegendListRenderItemProps<Row>) {
   return (
     // Keyed by block: list containers are recycled, and a block's own state
     // (an open activity group, a loaded image) must not follow its container.
-    <div
-      key={row.block.key}
-      className="mx-auto w-full px-6 max-w-3xl"
-      style={{ paddingTop: row.gap }}
-    >
+    <div key={row.key} className={COLUMN} style={{ paddingTop: row.gap }}>
       <TranscriptBlock block={row.block} interstitial={row.interstitial} />
     </div>
   );
@@ -741,6 +753,10 @@ function Messages() {
   const items = useActiveThread((t) => t.items);
   const loaded = useActiveThread((t) => t.loaded);
   const activeThreadId = useStore((s) => s.activeThreadId);
+  // Where this Thread was left (null: at the end). Read on render: the list
+  // applies it as its initial scroll each time it gets a fresh dataset — a
+  // switch, or the history replacing the skeleton.
+  const savedOffset = useActiveThread((t) => t.scrollOffset);
   const listRef = useRef<LegendListRef>(null);
   // Reuses the previous render's block objects wherever their items are
   // unchanged, so only the growing block re-renders (TranscriptBlock memo).
@@ -748,38 +764,39 @@ function Messages() {
   const prevRows = useRef<Row[]>([]);
   const rows = useMemo(() => {
     prevBlocks.current = toBlocks(items, prevBlocks.current);
-    prevRows.current = toRows(prevBlocks.current, prevRows.current);
+    prevRows.current = toRows(
+      activeThreadId,
+      prevBlocks.current,
+      prevRows.current,
+    );
     return prevRows.current;
-  }, [items]);
+  }, [items, activeThreadId]);
 
   // At the end of the transcript: drives the scroll-to-end pill. Following
   // the stream is maintainScrollAtEnd's job, and it follows only from here.
   const [pinned, setPinned] = useState(true);
 
-  // Each Thread keeps its own scroll position (ThreadState.scrollOffset,
-  // null = at the end). Scroll events record where the open Thread is; a
-  // switch saves that for the Thread being left and restores the new one's
-  // before paint. A Thread that was at the end opens at the end.
+  // Each Thread keeps its own scroll position (ThreadState.scrollOffset).
+  // Scroll events record where the open Thread is; leaving it saves that.
+  // Restoring is the list's initial scroll (below). A Thread that was at
+  // the end opens at the end.
   const shownThread = useRef(activeThreadId);
   const lastScroll = useRef<{ threadId: string; offset: number | null }>({
     threadId: activeThreadId,
     offset: null,
   });
   useLayoutEffect(() => {
-    const list = listRef.current;
     shownThread.current = activeThreadId;
-    if (!list || !loaded) return;
-    const saved =
-      useStore.getState().threads[activeThreadId]?.scrollOffset ?? null;
-    if (saved === null) void list.scrollToEnd({ animated: false });
-    else void list.scrollToOffset({ offset: saved, animated: false });
-    setPinned(saved === null);
+    setPinned(
+      (useStore.getState().threads[activeThreadId]?.scrollOffset ?? null) ===
+        null,
+    );
     return () => {
       const last = lastScroll.current;
       if (last.threadId === activeThreadId)
         useStore.getState().setScrollOffset(activeThreadId, last.offset);
     };
-  }, [activeThreadId, loaded]);
+  }, [activeThreadId]);
 
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
@@ -851,7 +868,7 @@ function Messages() {
         // the way down (a long block's hit can sit far below its top).
         raf = requestAnimationFrame(() => {
           const el = list.getScrollableNode();
-          const mark = el?.querySelector("mark.search-hit");
+          const mark = el?.querySelector(`mark.${SEARCH_HIT_CLASS}`);
           if (!el || !mark) return;
           const top =
             mark.getBoundingClientRect().top - el.getBoundingClientRect().top;
@@ -899,7 +916,9 @@ function Messages() {
           ref={listRef}
           data={loaded ? rows : []}
           dataKey={activeThreadId}
-          keyExtractor={(row) => row.block.key}
+          keyExtractor={(row) => row.key}
+          initialScrollAtEnd={savedOffset === null}
+          initialScrollOffset={savedOffset ?? undefined}
           getItemType={(row) => row.type}
           renderItem={renderRow}
           recycleItems
@@ -910,7 +929,7 @@ function Messages() {
           onScroll={onScroll}
           ListHeaderComponent={<div className="h-4" />}
           ListFooterComponent={<StreamingFooter />}
-          // Gutter reserved on both edges (see SettingsPage): a thread growing
+          // Gutter reserved on both edges (see SettingsPage): a Thread growing
           // long enough to scroll doesn't shift the transcript sideways, and
           // the column stays centered over the composer.
           style={{ height: "100%", scrollbarGutter: "stable both-edges" }}

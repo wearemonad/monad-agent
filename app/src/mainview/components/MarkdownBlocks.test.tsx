@@ -23,7 +23,10 @@ beforeAll(async () => {
   // never calls it (links only open on click).
   mock.module("../rpc", () => ({ api: {} }));
   ({ MarkdownBlocks, SearchHighlight } = await import("./MarkdownBlocks"));
+  ({ useStore } = await import("../store"));
 });
+
+let useStore: typeof import("../store").useStore;
 
 const ANSWER = [
   "## Plan",
@@ -91,5 +94,18 @@ describe("MarkdownBlocks", () => {
     expect(renderToStaticMarkup(<MarkdownBlocks text={text} />)).not.toContain(
       "<mark",
     );
+  });
+
+  test("a knowledge citation stays a link when a search hit is inside it", () => {
+    // Static rendering reads zustand's initial state (its server snapshot),
+    // so the known doc goes there.
+    useStore.getInitialState().knowledgePaths = ["plan.md"];
+    const html = renderToStaticMarkup(
+      <SearchHighlight.Provider value={["plan"]}>
+        <MarkdownBlocks text={"See `plan.md` for the plan."} />
+      </SearchHighlight.Provider>,
+    );
+    expect(html).toContain('title="Open knowledge/plan.md"');
+    expect(html).toContain('<mark class="search-hit">plan</mark>.md</button>');
   });
 });

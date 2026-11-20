@@ -5,6 +5,12 @@ import { SKIP, visit } from "unist-util-visit";
  *  (PARALLEL-THREADS-PR5-RENDERING.html §5a). Off-screen blocks aren't in
  *  the DOM, so matches are found in the data and marked while rendering. */
 
+/** Class on every hit's `<mark>` (styled in index.css). */
+export const SEARCH_HIT_CLASS = "search-hit";
+
+/** A run of text, flagged when it is a hit. */
+export type HitRun = { text: string; hit: boolean };
+
 export type SearchMatches = {
   /** Lower-cased strings to mark; empty when nothing matches. */
   needles: string[];
@@ -54,13 +60,10 @@ export function findSearchMatches(
 }
 
 /** `text` cut into runs, each flagged as a hit or not. */
-export function splitHits(
-  text: string,
-  needles: readonly string[],
-): { text: string; hit: boolean }[] {
+export function splitHits(text: string, needles: readonly string[]): HitRun[] {
   if (needles.length === 0) return [{ text, hit: false }];
   const lower = text.toLowerCase();
-  const parts: { text: string; hit: boolean }[] = [];
+  const parts: HitRun[] = [];
   let at = 0;
   while (at < text.length) {
     // Earliest next occurrence of any needle (longest wins a tie).
@@ -97,7 +100,7 @@ export function rehypeSearchHighlight(options: { needles: readonly string[] }) {
           ? {
               type: "element",
               tagName: "mark",
-              properties: { className: ["search-hit"] },
+              properties: { className: [SEARCH_HIT_CLASS] },
               children: [{ type: "text", value: p.text }],
             }
           : { type: "text", value: p.text },

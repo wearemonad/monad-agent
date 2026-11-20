@@ -1,8 +1,11 @@
 import {
+  Children,
   type ComponentProps,
   createContext,
+  isValidElement,
   memo,
   type ReactElement,
+  type ReactNode,
   useContext,
   useMemo,
 } from "react";
@@ -30,6 +33,20 @@ function knowledgeSet(paths: string[]): Set<string> {
   return set;
 }
 
+/** The text inside rendered children — a search highlight may have split
+ *  a code span's text into runs and `<mark>`s. */
+function textOf(children: ReactNode): string {
+  return Children.toArray(children)
+    .map((child) =>
+      typeof child === "string" || typeof child === "number"
+        ? String(child)
+        : isValidElement<{ children?: ReactNode }>(child)
+          ? textOf(child.props.children)
+          : "",
+    )
+    .join("");
+}
+
 /** Inline code in assistant markdown. A `path.md` that matches a known
  *  knowledge doc becomes a clickable citation. It subscribes to the knowledge
  *  list itself with a boolean selector, so a knowledge-list change re-renders
@@ -46,7 +63,7 @@ function KnowledgeCode({
   const isBlock = /\blanguage-/.test(className ?? "");
   const rel = isBlock
     ? null
-    : String(children)
+    : textOf(children)
         .trim()
         .replace(/^knowledge\//, "")
         .replace(/^\.\//, "");
@@ -77,10 +94,21 @@ const remarkPlugins = [remarkGfm];
 
 /** One block parsed to React elements. `Markdown` is synchronous, so calling
  *  it directly yields its output tree — which is what makes caching skip the
- *  parse, not just the component. */
-function renderBlock(text: string): ReactElement {
-  return Markdown({ children: text, remarkPlugins, components });
+ *  parse, not just the component. With needles, hits are marked. */
+function renderBlock(
+  text: string,
+  needles: readonly string[] = [],
+): ReactElement {
+  return Markdown({
+    children: text,
+    remarkPlugins,
+    rehypePlugins:
+      needles.length > 0 ? [[rehypeSearchHighlight, { needles }]] : [],
+    components,
+  });
 }
+
+const renderPlain = (text: string) => renderBlock(text);
 
 /** One top-level block, memoised on its text and highlight. */
 const MarkdownBlock = memo(function MarkdownBlock({
@@ -95,14 +123,8 @@ const MarkdownBlock = memo(function MarkdownBlock({
 }) {
   // While a search term is set the block renders fresh: highlights aren't a
   // pure function of the text.
-  if (needles.length > 0)
-    return Markdown({
-      children: text,
-      remarkPlugins,
-      rehypePlugins: [[rehypeSearchHighlight, { needles }]],
-      components,
-    });
-  return cache ? cachedMarkdown(text, renderBlock) : renderBlock(text);
+  if (needles.length > 0) return renderBlock(text, needles);
+  return cache ? cachedMarkdown(text, renderPlain) : renderPlain(text);
 });
 
 /** Assistant markdown, split into top-level blocks (§5b). Finished blocks
