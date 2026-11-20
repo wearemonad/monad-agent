@@ -37,16 +37,9 @@ const RESTING_STATUSES = [
  *  downloaded → "install", available (or a failed download with a known
  *  available version) → "download", otherwise → "check".
  *
- *  Two variants: "full" (settings) shows the manual check button and status
- *  lines; "compact" (sidebar) renders nothing at all until the background
- *  check finds an update, then shows just the action button. */
-export function UpdateControls({
-  className,
-  variant = "full",
-}: {
-  className?: string;
-  variant?: "full" | "compact";
-}) {
+ *  This is the Settings panel version, with the manual check button and
+ *  status lines. The sidebar's round button is SidebarUpdateButton. */
+export function UpdateControls({ className }: { className?: string }) {
   const settings = useStore((s) => s.settings);
   const updateStatus = useStore((s) => s.updateStatus);
   const [checking, setChecking] = useState(false);
@@ -102,23 +95,11 @@ export function UpdateControls({
   };
 
   const confirmDialog = (
-    <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-      <AlertDialogContent size="sm">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Install update and restart?</AlertDialogTitle>
-          <AlertDialogDescription>
-            Any running tasks will be interrupted. Make sure you're ready before
-            continuing.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={install}>
-            Restart &amp; install
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <InstallUpdateDialog
+      open={confirmOpen}
+      onOpenChange={setConfirmOpen}
+      onConfirm={install}
+    />
   );
 
   const installButton = (
@@ -147,23 +128,6 @@ export function UpdateControls({
           : "Downloading…"}
     </Button>
   );
-
-  if (variant === "compact") {
-    // Sidebar: invisible until the background check finds an update — the
-    // manual check, version line and status text live in Settings.
-    if (settings.channel === "dev" || !settings.updatesConfigured) return null;
-    if (installDone || (!updateAvailable && !busy && !updateReady)) return null;
-    return (
-      <div className={cn("space-y-1.5", className)}>
-        {updateReady && !busy
-          ? installButton
-          : busy
-            ? progressButton
-            : downloadButton}
-        {confirmDialog}
-      </div>
-    );
-  }
 
   return (
     <div className={cn("space-y-1.5", className)}>
@@ -242,5 +206,36 @@ export function UpdateControls({
         </>
       )}
     </div>
+  );
+}
+
+/** "Install update and restart?" — shared by Settings and the sidebar button. */
+export function InstallUpdateDialog({
+  open,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent size="sm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Install update and restart?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Any running tasks will be interrupted. Make sure you're ready before
+            continuing.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={onConfirm}>
+            Restart &amp; install
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }

@@ -56,7 +56,12 @@ import { HealthBanner } from "./HealthBanner";
 import { SettingsNav } from "./SettingsPage";
 import { InboxPanel } from "./InboxPanel";
 import { ReviewPanel } from "./ReviewPanel";
-import { UpdateControls } from "./UpdateControls";
+import { SidebarUpdateButton } from "./SidebarUpdateButton";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 
 const INITIAL_THREADS_SHOWN = 12;
@@ -119,33 +124,63 @@ export function Sidebar({
           <SearchBox />
           <ThreadList />
           <div className="p-3 gap-2 flex flex-col">
-            <UpdateControls variant="compact" />
             <HealthBanner />
             <ReviewPanel />
             <InboxPanel />
             <OutboxPanel />
-            <div className="flex gap-2 mt-2">
-              <Button
-                variant="secondary"
-                className="flex-1"
-                onClick={() => useStore.getState().setKnowledgeOpen(true)}
-              >
-                <Brain className="size-3.5" /> Knowledge
-              </Button>
-              <Button
-                variant="secondary"
-                className="flex-1"
-                title="Settings"
+            {/* T3 Code-style utility row: icon buttons left, the round
+                update button right. Labels live in tooltips + aria-label. */}
+            <div className="flex items-center gap-1 mt-1">
+              <FooterIconButton
+                label="Settings"
                 onPointerDown={() => perf.markClick("settings")}
                 onClick={() => useStore.getState().setSettingsOpen(true)}
               >
-                <Settings className="size-3.5" /> Settings
-              </Button>
+                <Settings />
+              </FooterIconButton>
+              <FooterIconButton
+                label="Knowledge"
+                onClick={() => useStore.getState().setKnowledgeOpen(true)}
+              >
+                <Brain />
+              </FooterIconButton>
+              <SidebarUpdateButton />
             </div>
           </div>
         </>
       )}
     </aside>
+  );
+}
+
+/** A footer utility: icon only, named by its tooltip and aria-label. */
+function FooterIconButton({
+  label,
+  children,
+  ...props
+}: {
+  label: string;
+  children: ReactNode;
+  onClick: () => void;
+  onPointerDown?: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={label}
+            className="text-muted-foreground hover:text-foreground"
+            {...props}
+          />
+        }
+      >
+        {children}
+      </TooltipTrigger>
+      <TooltipContent side="top">{label}</TooltipContent>
+    </Tooltip>
   );
 }
 
